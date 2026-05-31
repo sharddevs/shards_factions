@@ -17,13 +17,28 @@ public class FactionManager {
     public Claim getClaim(ChunkPos chunk) {
         return this.claims.get(chunk);
     }
-    public Faction createFaction(String name, UUID owner, FactionType type) {
+    public CreateResult createFaction(String name, UUID owner, FactionType type) {
+        for (Faction faction : this.factions.values()) {
+            if (faction.getName().equalsIgnoreCase(name)) {
+                return CreateResult.NAME_TAKEN;
+            }
+        }
         Faction faction = new Faction(name, owner, type);
         this.factions.put(faction.getId(), faction);
-        return faction;
+        return CreateResult.SUCCESS;
+
     }
     public void addFaction(Faction faction) {
         this.factions.put(faction.getId(), faction);
+    }
+    public Faction getFactionByMember(UUID player) {
+        for (Faction faction : this.factions.values()) {
+            // if this faction has `player` as a member, return it
+            if (faction.isMember(player)) {
+                return faction;
+            }
+        }
+        return null;  // not in any faction
     }
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
         if (getClaim(chunk) != null) {

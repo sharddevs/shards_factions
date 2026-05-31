@@ -174,6 +174,9 @@ public class Faction {
     public void addMemberWithRole(UUID playerId, FactionRole role) {
         this.members.put(playerId, role);
     }
+    public boolean isMember(UUID playerId) {
+        return this.members.containsKey(playerId);
+    }
     /**
      * Removes a player from this faction.
      *

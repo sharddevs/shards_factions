@@ -34,28 +34,12 @@ public class ShardsFactions {
     // to MOD_ID instead of re-typing the literal string (and risking typos).
     public static final String MOD_ID = "shards_factions";
 
-    // A logger for this mod. SLF4J is the logging API NeoForge/Minecraft use;
+    // A logger for this mod. SLF4J is the logging API NeoFor6ge/Minecraft use;
     // LogUtils.getLogger() hands back a logger tagged to this class.
     private static final Logger LOGGER = LogUtils.getLogger();
-
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
-        LOGGER.info("[shards_factions] Test Faction should be created after this line");
-        FactionManager manager = new FactionManager();
-        Faction faction = manager.createFaction("TestFaction", UUID.randomUUID(), FactionType.PLAYER);
-        ChunkPos chunk = new ChunkPos(0, 0);
-        ClaimResult first = manager.claimChunk(chunk, faction);
-        LOGGER.info("[shards_factions] claim attempt 1: {}", first);
-        ClaimResult second = manager.claimChunk(chunk, faction);
-        LOGGER.info("[shards_factions] (This one should fail) claim attempt 2: {}", second);
-        // THROWAWAY persistence test — delete when /f new exists.
-        FactionSavedData data = FactionSavedData.get(event.getServer());
-        LOGGER.info("[shards_factions] loaded factions: {}",
-                data.getManager().getAllFactions().size());
-
-        data.getManager().createFaction("PersistTest", UUID.randomUUID(), FactionType.PLAYER);
-        data.setDirty();
-        LOGGER.info("[shards_factions] created PersistTest, marked dirty");
+        LOGGER.info("[Shards Factions] Server is Starting and I'm loaded!");
     }
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
