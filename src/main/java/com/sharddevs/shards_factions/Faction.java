@@ -50,7 +50,7 @@ public class Faction {
 
     // [§3] UUID = the owner's permanent player id. NOT final — ownership can
     // transfer to another member via /f promote owner, which reassigns this.
-    private final UUID owner;
+    private UUID owner;
 
     // [§10] Map<UUID, FactionRole> — each member id mapped to their role.
     // [§11] final fixes the slot; the map's CONTENTS still change as members
@@ -367,6 +367,18 @@ public class Faction {
      * invite is single-use.
      */
     public void removeInvite(UUID playerId) {
+
         this.invites.remove(playerId);
+    }
+    /**
+     * Transfers ownership to another member (design addendum §16.4).
+     * The new owner is set to OWNER; the OLD owner is demoted to OFFICER.
+     * Both the owner FIELD and the role-map entries are updated together —
+     * that is the whole reason this is one method and not two setter calls.
+     */
+    public void transferOwnership(UUID newOwner) {
+        this.members.put(this.owner, FactionRole.OFFICER);
+        this.members.put(newOwner, FactionRole.OWNER);
+        this.owner = newOwner;
     }
 }

@@ -26,12 +26,16 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.tree.LiteralCommandNode;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.level.ChunkPos;
+
 
 public class FactionCommand {
 
@@ -43,6 +47,7 @@ public class FactionCommand {
      * calls at the bottom hand it to the game under all three aliases.
      */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
+
 
         LiteralArgumentBuilder<CommandSourceStack> faction = Commands.literal("faction")
 
@@ -501,6 +506,15 @@ public class FactionCommand {
                                                     + " from '" + playerFaction.getName() + "'."), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("promote")
+                        .then(Commands.argument("role", StringArgumentType.word())
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .executes(ctx -> handleRoleChange(ctx, true)))))
+
+                .then(Commands.literal("demote")
+                        .then(Commands.argument("role", StringArgumentType.word())
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .executes(ctx -> handleRoleChange(ctx, false)))))
                 ;
 
         // Register the tree ONCE and capture the node it returns. The two
@@ -509,5 +523,116 @@ public class FactionCommand {
         LiteralCommandNode<CommandSourceStack> built = dispatcher.register(faction);
         dispatcher.register(Commands.literal("factions").redirect(built));
         dispatcher.register(Commands.literal("f").redirect(built));
+    }
+    // ===========================================================================
+// Shared body for /f promote and /f demote (Addendum 1 §16.4).
+// Both verbs do nearly the same thing — set a member's role — so the logic
+// lives here once. `isPromote` is the ONLY difference: it picks which
+// direction-guard rejection applies.
+//
+// FactionRole is declared OWNER, OFFICER, MEMBER -> ordinals 0,1,2.
+// LOWER ordinal = HIGHER rank. (Same convention /f kick relies on.)
+// ===========================================================================
+    private static int handleRoleChange(CommandContext<CommandSourceStack> ctx,
+                                        boolean isPromote) throws CommandSyntaxException {
+        ServerPlayer player = ctx.getSource().getPlayerOrException();
+        ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+        String roleArg = StringArgumentType.getString(ctx, "role");
+        FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+        // GATE 1: runner must be in a faction.
+        Faction playerFaction = manager.getFactionByMember(player.getUUID());
+        if (playerFaction == null) {
+            ctx.getSource().sendFailure(
+                    Component.literal("You are not in a faction!"));
+            return 0;
+        }
+
+        // GATE 2: runner must be the OWNER. NOT isAtLeastOfficer — §16.4 says
+        // role management is owner-exclusive; an OFFICER cannot do this at all.
+        // YOU: getOwner().equals(player.getUUID()) check.
+        if (!playerFaction.getOwner().equals(player.getUUID())) {
+            ctx.getSource().sendFailure(
+                    Component.literal("Only the owner can manage roles."));
+            return 0;
+        }
+        // GATE 3: target must be a member of this faction.
+        // Must run before any getRole/ordinal on the target.
+        // YOU: isMember check.
+        if (!playerFaction.isMember(target.getUUID())) {
+            ctx.getSource().sendFailure(
+                    Component.literal(target.getName().getString() + " is not in your faction."));
+            return 0;
+        }
+        // GATE 4: parse the role argument safely. FactionRole.valueOf THROWS
+        // on a bad string ("/f promote captain Bob") — that throw must become
+        // a clean failure, not a crash. Parse inside try/catch:
+        FactionRole newRole;
+        try {
+            newRole = FactionRole.valueOf(roleArg.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            ctx.getSource().sendFailure(
+                    Component.literal("'" + roleArg + "' is not a valid role. Use OWNER, OFFICER or MEMBER."));
+            return 0;
+        }
+
+        // GATE 5: cannot target the current owner directly. The ONLY way out
+        // of OWNER is the transfer path below. So a command that names the
+        // owner as its target — except the transfer itself — is rejected.
+        // YOU: if target's UUID equals playerFaction.getOwner() -> fail.
+        //      (This blocks "/f demote MEMBER <owner>" and similar.)
+        if (target.getUUID().equals(playerFaction.getOwner())) {
+            ctx.getSource().sendFailure(
+                    Component.literal("You can't change the owner's role directly. Use /f promote owner <player> to transfer."));
+            return 0;
+        }
+        // ---- TRANSFER branch: /f promote owner <name> ----
+        // Setting someone to OWNER is not a role-set, it's a transfer.
+        if (newRole == FactionRole.OWNER) {
+            if (!isPromote) {
+                ctx.getSource().sendFailure(
+                        Component.literal("You can't demote someone to owner. Use /f promote owner <player>."));
+                return 0;
+            }
+            playerFaction.transferOwnership(target.getUUID());
+            FactionSavedData.get(player.server).setDirty();
+            manager.notifyFaction(playerFaction,
+                    Component.literal(target.getName().getString() + " is now the owner of the faction."),
+                    player.server);
+            ctx.getSource().sendSuccess(
+                    () -> Component.literal("Ownership transferred to " + target.getName().getString() + "."), false);
+            return 1;
+        }
+
+        // ---- DIRECTION GUARD (§16.4) — plain role-set, non-OWNER target role ----
+        // The runner is the owner (GATE 2), so compare the NEW role against the
+        // target's CURRENT role to enforce verb-matches-effect.
+        FactionRole currentRole = playerFaction.getRole(target.getUUID());
+        // isPromote  -> newRole must be a HIGHER rank than current -> LOWER ordinal.
+        // !isPromote -> newRole must be a LOWER rank  -> HIGHER ordinal.
+        // YOU: if isPromote and newRole.ordinal() >= currentRole.ordinal() -> fail
+        //      ("/f promote can only raise a rank").
+        // YOU: else if !isPromote and newRole.ordinal() <= currentRole.ordinal() -> fail.
+        if (isPromote && newRole.ordinal() >= currentRole.ordinal()) {
+            ctx.getSource().sendFailure(
+                    Component.literal("/f promote can only raise a rank."));
+            return 0;
+        }
+        if (!isPromote && newRole.ordinal() <= currentRole.ordinal()) {
+            ctx.getSource().sendFailure(
+                    Component.literal("/f demote can only lower a rank."));
+            return 0;
+        }
+        // ACT: plain role-set.
+        manager.notifyFaction(playerFaction,
+                Component.literal(target.getName().getString() + " is now " + newRole.name() + "."),
+                player.server);
+        ctx.getSource().sendSuccess(
+                () -> Component.literal("Set " + target.getName().getString() + " to " + newRole.name() + "."), false);
+
+        playerFaction.addMemberWithRole(target.getUUID(), newRole);
+        FactionSavedData.get(player.server).setDirty();
+        // YOU: notifyFaction + sendSuccess. return 1.
+        return 1;
     }
 }
