@@ -10,6 +10,8 @@ import net.minecraft.world.level.ChunkPos;
 import net.minecraft.nbt.Tag;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+// ChatFormatting — the faction colour type, persisted by name() / valueOf().
+import net.minecraft.ChatFormatting;
 /**
  * Persistence layer for faction data (design §10).
  *
@@ -53,6 +55,10 @@ public class FactionSavedData extends SavedData {
             factionTag.putInt("usedClaims", faction.getUsedClaims());
             // factionTag.putInt("usedClaims", ??? );
             factionTag.putString("type", faction.getType().name());
+            // An enum is persisted as its NAME — .name() gives the String
+            // "RED", "AQUA", etc.; load() turns it back with valueOf().
+            // Same pattern as "type" above.
+            factionTag.putString("color", faction.getColor().name());
             ListTag memberList = new ListTag();
             for (UUID memberId : faction.getMembers()) {
                 CompoundTag memberTag = new CompoundTag();
@@ -87,22 +93,39 @@ public class FactionSavedData extends SavedData {
         for (int i = 0; i < factionList.size(); i++) {
             CompoundTag factionTag = factionList.getCompound(i);
 
+            // --- Restore the faction's colour from NBT. ---
+            // getString returns "" for a MISSING key — and an old save file
+            // written before factions had colours has no "color" tag.
+            // ChatFormatting.valueOf("") THROWS, which would crash the load.
+            // So: if the tag is missing/blank, fall back to WHITE; otherwise
+            // valueOf the saved name. (This is why ADDING a saved field is
+            // not the mirror of REMOVING one — a removed tag is harmlessly
+            // ignored, a missing required tag must be defended.)
+            String colorName = factionTag.getString("color");
+            ChatFormatting color;
+            if (colorName.isEmpty()) {
+                color = ChatFormatting.WHITE;
+            } else {
+                color = ChatFormatting.valueOf(colorName);
+            }
+
             Faction faction = new Faction (
                     factionTag.getUUID("id"),
                     factionTag.getString("name"),
                     factionTag.getUUID("owner"),
                     FactionType.valueOf(factionTag.getString("type")),
+                    color,
                     factionTag.getInt("bonusBudget"),
                     factionTag.getInt("usedClaims")
             );
             ListTag memberList = factionTag.getList("members", Tag.TAG_COMPOUND);
             for (int j = 0; j < memberList.size(); j++) {
-               CompoundTag memberTag = memberList.getCompound(j);
+                CompoundTag memberTag = memberList.getCompound(j);
 
-               faction.addMemberWithRole(
-                       memberTag.getUUID("uuid"),
-                       FactionRole.valueOf(memberTag.getString("role"))
-               );
+                faction.addMemberWithRole(
+                        memberTag.getUUID("uuid"),
+                        FactionRole.valueOf(memberTag.getString("role"))
+                );
             }
 
             data.getManager().addFaction(faction);
@@ -125,8 +148,8 @@ public class FactionSavedData extends SavedData {
     }
     public static SavedData.Factory<FactionSavedData> factory() {
         return new SavedData.Factory<>(
-            FactionSavedData::new,
-            FactionSavedData::load
+                FactionSavedData::new,
+                FactionSavedData::load
         );
     }
 

@@ -34,7 +34,10 @@ import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.world.level.ChunkPos;
+// ChatFormatting — used by /f map to colour the grid cells.
+import net.minecraft.ChatFormatting;
 
 
 public class FactionCommand {
@@ -552,6 +555,115 @@ public class FactionCommand {
                                 ctx.getSource().sendSuccess(
                                         () -> Component.literal("Autoclaim OFF."), false);
                             }
+                            return 1;
+                        }))
+
+                // ===========================================================
+                // /f map  —  a chat-grid map of nearby claims (Addendum 2
+                // §19.1). Server-side ONLY: no client mod, no networking —
+                // the server knows every claim and just builds a coloured
+                // text grid and sends it as chat.
+                //
+                // Read-only, like /f info: no setDirty, no notifyFaction.
+                // Gate: must be in a faction (the grid highlights YOUR land,
+                // so "not in a faction" has nothing to centre on).
+                //
+                // GRID: 9x9 chunks centred on the player's chunk. Minecraft
+                // axes: +Z is SOUTH, -Z is NORTH. To draw north-up (top row
+                // = north), dz runs -4..+4 top-to-bottom; dx runs -4..+4
+                // left-to-right (west to east).
+                //
+                // CELL SYMBOLS:
+                //   +  the player's own chunk (grid centre)      — yellow
+                //   #  a chunk owned by the player's faction     — faction colour
+                //   #  a chunk owned by another faction          — that faction's colour
+                //   .  wilderness (unclaimed)                    — dark gray
+                // ===========================================================
+                .then(Commands.literal("map")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                            // GATE: must be in a faction.
+                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                            if (playerFaction == null) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are not in a faction!"));
+                                return 0;
+                            }
+
+                            // The chunk the player is standing in — the grid
+                            // centre. px/pz are chunk coordinates.
+                            ChunkPos centre = player.chunkPosition();
+                            int px = centre.x;
+                            int pz = centre.z;
+
+                            // Build the map as ONE Component, line by line.
+                            // MutableComponent: a Component you can .append()
+                            // children to. Component.literal(...) already
+                            // returns one — typing the variable as
+                            // MutableComponent lets us call .append without
+                            // casting on every line.
+                            // Start with a header line; each grid row is
+                            // appended as a child, prefixed with "\n".
+                            MutableComponent map = Component.literal("Faction Map — centred on you")
+                                    .withStyle(ChatFormatting.GOLD);
+
+                            // OUTER loop: rows, north (-4) to south (+4).
+                            for (int dz = -4; dz <= 4; dz++) {
+                                // Each row starts on a new line.
+                                MutableComponent row = Component.literal("\n");
+
+                                // INNER loop: cells in the row, west to east.
+                                for (int dx = -4; dx <= 4; dx++) {
+                                    ChunkPos cell = new ChunkPos(px + dx, pz + dz);
+
+                                    String symbol;
+                                    ChatFormatting colour;
+
+                                    // CASE 1: the centre cell is the player.
+                                    // dx==0 && dz==0 is the player's own chunk.
+                                    if (dx == 0 && dz == 0) {
+                                        symbol = "+";
+                                        colour = ChatFormatting.YELLOW;
+                                    } else {
+                                        // Otherwise classify by who owns it.
+                                        Claim claim = manager.getClaim(cell);
+                                        if (claim == null) {
+                                            // CASE 2: wilderness.
+                                            symbol = ".";
+                                            colour = ChatFormatting.DARK_GRAY;
+                                        } else {
+                                            // CASE 3/4: claimed — resolve the
+                                            // owning faction to colour the cell.
+                                            Faction owner =
+                                                    manager.getFaction(claim.getClaimedBy());
+                                            symbol = "#";
+                                            // Defensive: a claim should always
+                                            // resolve, but don't NPE if it
+                                            // somehow doesn't — fall back to
+                                            // wilderness styling.
+                                            colour = (owner != null)
+                                                    ? owner.getColor()
+                                                    : ChatFormatting.DARK_GRAY;
+                                        }
+                                    }
+
+                                    // Append the cell (symbol + a space, so
+                                    // the grid is not cramped) in its colour.
+                                    row.append(Component.literal(symbol + " ")
+                                            .withStyle(colour));
+                                }
+
+                                // Append the finished row to the map.
+                                map.append(row);
+                            }
+
+                            // Pure read — sendSuccess only, no setDirty/notify.
+                            // 'final' copy: the lambda below captures it, and a
+                            // lambda may only capture effectively-final vars.
+                            final MutableComponent finalMap = map;
+                            ctx.getSource().sendSuccess(() -> finalMap, false);
                             return 1;
                         }))
                 ;

@@ -28,6 +28,12 @@ import java.util.UUID;        // [§3] a player's permanent unique id
 import java.util.Map;         // [§10] the Map type itself
 import java.util.HashMap;     // a concrete kind of Map we can create with 'new'
 
+// ChatFormatting is a VANILLA Minecraft enum — the 16 colours (RED, AQUA,
+// GOLD, ...) plus style codes (BOLD, ITALIC, ...). It is the faction's
+// display colour, used by /f map's coloured grid and the action-bar label.
+// It lives outside our package, so it must be imported like List or UUID.
+import net.minecraft.ChatFormatting;
+
 /**
  * [§13] Javadoc comment describing the class below.
  *
@@ -64,6 +70,13 @@ public class Faction {
     // faction never changes category for its lifetime.
     private final FactionType type;
 
+    // [§11] the faction's display colour — a vanilla ChatFormatting value.
+    // final: assigned ONCE at creation and never changed. There is no
+    // /f color command in v1 (HANDOFF_6 §5) — players do not pick it; it is
+    // auto-assigned by FactionManager.createFaction (least-used colour).
+    // Used by /f map's coloured grid cells and the action-bar faction label.
+    private final ChatFormatting color;
+
     // [§3] int — the "bonus" budget term (design §6). A spare capacity source
     // for future features (events, upgrades). 0 for now. NOT final — a future
     // feature could change it at runtime.
@@ -99,11 +112,13 @@ public class Faction {
      * @param name  the faction's name
      * @param owner the UUID of the player who owns it
      * @param type  the faction's type (PLAYER / SAFEZONE / WARZONE)
+     * @param color the faction's display colour, chosen by the CALLER
+     *              (FactionManager.createFaction picks the least-used one).
      *
      * The owner is automatically added to the members map with role OWNER —
      * a faction always contains its owner (design addendum §13.7, §16.3).
      */
-    public Faction(String name, UUID owner, FactionType type) {
+    public Faction(String name, UUID owner, FactionType type, ChatFormatting color) {
         // [§7] 'this.name' = this object's FIELD; 'name' = the parameter.
         this.name = name;
         this.owner = owner;
@@ -116,6 +131,7 @@ public class Faction {
         // [§8] every faction generates its own permanent id at creation.
         this.id = UUID.randomUUID();
         this.type = type;
+        this.color = color;
 
         // Budget terms both start empty (design §6). Set explicitly even
         // though int defaults to 0 — keeps every field's start value in one
@@ -132,11 +148,12 @@ public class Faction {
      * afterward via addMemberWithRole, so each member (owner included) is
      * restored with the exact role that was saved.
      */
-    public Faction(UUID id, String name, UUID owner, FactionType type, int bonusBudget, int usedClaims) {
+    public Faction(UUID id, String name, UUID owner, FactionType type, ChatFormatting color, int bonusBudget, int usedClaims) {
         this.id = id;
         this.name = name;
         this.owner = owner;
         this.type = type;
+        this.color = color;
         this.bonusBudget = bonusBudget;
         this.usedClaims = usedClaims;
 
@@ -163,6 +180,12 @@ public class Faction {
 
     public FactionType getType() {
         return this.type;
+    }
+
+    // [§5] hands back the faction's display colour. /f map and the action-bar
+    // label call this to colour a faction's name / grid cells.
+    public ChatFormatting getColor() {
+        return this.color;
     }
 
     // [§10] returns a NEW List of all member UUIDs (the map's keys). A fresh
