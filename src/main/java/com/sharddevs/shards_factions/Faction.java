@@ -8,6 +8,13 @@
 // This is a PLAIN Java class: no Minecraft API, no persistence. It just
 // describes what a faction IS and what it can DO. Saving it to disk is the
 // next file's job (SavedData).
+//
+// LAYOUT — methods are grouped by the SUBSYSTEM they belong to, not by
+// "getter vs setter". A method lives with the data it operates on:
+//   GETTERS        — simple identity reads (name, owner, id, type, members).
+//   MEMBER METHODS — everything that touches the members map.
+//   POWER METHODS  — everything that touches the power field.
+//   BUDGET METHODS — everything that touches the claim budget.
 // ===========================================================================
 
 // [§12] package — must match this file's folder path:
@@ -50,9 +57,8 @@ public class Faction {
     // join, leave, or have their role changed.
     private final Map<UUID, FactionRole> members;
 
-    // [§3] int = a whole number — the faction's live power pool (design §6).
-    // NOT final: power changes constantly (drops on death, regens on tick),
-    // so its slot must be reassignable.
+    // [§3] int — the faction's live power pool (design §6). NOT final: power
+    // changes constantly (drops on death, regens on tick).
     private int power;
 
     // [§3][§11] the faction's permanent unique id, generated at creation.
@@ -61,6 +67,16 @@ public class Faction {
     // [§11] the faction's type (PLAYER / SAFEZONE / WARZONE). final — a
     // faction never changes category for its lifetime.
     private final FactionType type;
+
+    // [§3] int — the "bonus" budget term (design §6). A spare capacity source
+    // for future features (events, upgrades). 0 for now. NOT final — a future
+    // feature could change it at runtime.
+    private int bonusBudget;
+
+    // [§3] int — how many chunks this faction currently owns. Goes UP on
+    // claim, DOWN on unclaim or losing a chunk to an enemy overclaim. NOT
+    // final. With baseBudget + bonusBudget, this is the third budget term.
+    private int usedClaims;
 
     // -----------------------------------------------------------------------
     // CONSTRUCTOR — [§6] runs once, when a new Faction is created with 'new'.
@@ -76,37 +92,37 @@ public class Faction {
      * The owner is automatically added to the members map with role OWNER —
      * a faction always contains its owner (design addendum §13.7, §16.3).
      */
-    // [§6] same name as the class, no return type.
-    // [§5] 'name', 'owner', 'type' in the parentheses are PARAMETERS — values
-    // the caller must supply.
     public Faction(String name, UUID owner, FactionType type) {
-        // [§7] 'this.name' = this object's name FIELD; 'name' = the parameter.
-        // The line copies the incoming value into this object's slot.
+        // [§7] 'this.name' = this object's FIELD; 'name' = the parameter.
         this.name = name;
         this.owner = owner;
 
-        // [§8] 'new HashMap<>()' creates a fresh, empty map and the members
-        // slot is set to point at it. Then [§10] put() inserts the owner as
-        // the first member with role OWNER — a faction always has its owner.
+        // [§8] new empty map, then [§10] put() inserts the owner as the first
+        // member with role OWNER — a faction always has its owner.
         this.members = new HashMap<>();
         this.members.put(owner, FactionRole.OWNER);
 
-        // Starting power. 10 is a placeholder default — the real starting
-        // value is configurable (design §12) and will be wired up later.
+        // Starting power. 10 is a placeholder — real value is configurable
+        // (design §12), wired up later.
         this.power = 10;
 
         // [§8] every faction generates its own permanent id at creation.
         this.id = UUID.randomUUID();
         this.type = type;
+
+        // Budget terms both start empty (design §6). Set explicitly even
+        // though int defaults to 0 — keeps every field's start value in one
+        // visible place.
+        this.bonusBudget = 0;
+        this.usedClaims = 0;
     }
 
     // -----------------------------------------------------------------------
-    // GETTERS — [§5] methods that hand a private field's value back out.
-    // Outside code can't read the fields directly (they're private), so it
-    // reads them through these.
+    // GETTERS — [§5] simple identity reads. These hand a private field
+    // straight back. Subsystem-specific reads live in their own sections
+    // below (getPower with POWER, getUsedClaims with BUDGET, etc.).
     // -----------------------------------------------------------------------
 
-    // [§5] return type String; no parameters; body hands back the name.
     public String getName() {
         return this.name;
     }
@@ -115,25 +131,19 @@ public class Faction {
         return this.owner;
     }
 
-    // [§5] returns the int power value.
-    public int getPower() {
-        return this.power;
-    }
-
-    // [§10] returns a fresh List of all member UUIDs (the map's keys). A NEW
-    // list is built so callers can read the members without being able to
-    // modify the faction's real members map. getMemberCount() gives the
-    // count — the basis for the design's base budget (members * 10).
-    public List<UUID> getMembers() {
-        return new ArrayList<>(this.members.keySet());
-    }
-
     public UUID getId() {
         return this.id;
     }
 
     public FactionType getType() {
         return this.type;
+    }
+
+    // [§10] returns a NEW List of all member UUIDs (the map's keys). A fresh
+    // list is built so callers can read members without being able to modify
+    // the faction's real members map.
+    public List<UUID> getMembers() {
+        return new ArrayList<>(this.members.keySet());
     }
 
     // -----------------------------------------------------------------------
@@ -146,8 +156,7 @@ public class Faction {
      */
     public void addMember(UUID playerId) {
         // [§10] only add if not already a key, so a player can't be listed
-        // twice. 'containsKey' returns true/false; '!' flips it, so this reads
-        // "if the map does NOT already contain this player".
+        // twice. 'containsKey' returns true/false; '!' flips it.
         if (!this.members.containsKey(playerId)) {
             this.members.put(playerId, FactionRole.MEMBER);
         }
@@ -156,13 +165,13 @@ public class Faction {
     /**
      * Removes a player from this faction.
      *
-     * NOTE: this does NOT currently guard the owner — passing the owner here
-     * would leave the faction ownerless. The owner guard is deferred to the
-     * command layer (/f leave / /f disband). See design addendum §13.7.
+     * NOTE: does NOT guard the owner — passing the owner here would leave the
+     * faction ownerless. The owner guard is deferred to the command layer
+     * (/f leave / /f disband). See design addendum §13.7.
      */
     public void removeMember(UUID playerId) {
-        // [§10] remove does nothing if the id isn't a key, so this is
-        // safe to call unconditionally.
+        // [§10] remove does nothing if the id isn't a key — safe to call
+        // unconditionally.
         this.members.remove(playerId);
     }
 
@@ -175,16 +184,22 @@ public class Faction {
     }
 
     // -----------------------------------------------------------------------
-    // POWER METHODS — [§5] controlled changes to the power field.
-    // Because 'power' is private, THIS is the only way outside code can change
-    // it — and these methods are where the design's power RULES get enforced.
+    // POWER METHODS — [§5] controlled access to the power field.
+    // Because 'power' is private, these methods are the ONLY way outside code
+    // touches it — so the design's power RULES get enforced in one place.
     // -----------------------------------------------------------------------
+
+    /**
+     * Reads the current power value.
+     */
+    public int getPower() {
+        return this.power;
+    }
 
     /**
      * Increases power by the given amount (used by the regen tick later).
      */
     public void addPower(int amount) {
-        // [§7] read this object's current power, add amount, store it back.
         this.power = this.power + amount;
     }
 
@@ -202,8 +217,72 @@ public class Faction {
             this.power = 0;
         }
     }
-    public int getBaseBudget(){
+
+    // -----------------------------------------------------------------------
+    // BUDGET METHODS — [§5] the claim-budget system (design §6).
+    //
+    // Three terms decide whether a faction may claim another chunk:
+    //   baseBudget  — DERIVED (member count * 10). A method, never a field,
+    //                 so it's always current and can't fall out of sync.
+    //   bonusBudget — STORED field. Spare capacity. 0 for now.
+    //   usedClaims  — STORED field. Chunks currently owned.
+    //
+    // available = baseBudget + bonusBudget - usedClaims
+    // The /f claim check is "available > 0" — enforced by the CALLER
+    // (FactionManager.claimChunk), not here. These methods are dumb
+    // mechanisms; the rule lives one layer up.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Base budget: member count * 10 (design §6). Derived — recomputed every
+     * call from the live member count.
+     */
+    public int getBaseBudget() {
         return getMemberCount() * 10;
     }
 
+    /**
+     * Reads the bonusBudget FIELD. (Returns the field — a getter hands back
+     * the field, it does not call itself.)
+     */
+    public int getBonusBudget() {
+        return this.bonusBudget;
+    }
+
+    /**
+     * Reads the usedClaims FIELD.
+     */
+    public int getUsedClaims() {
+        return this.usedClaims;
+    }
+
+    /**
+     * The available budget — the headroom /f claim checks (design §6).
+     * Calls getBaseBudget() rather than recomputing member*10, so the "base"
+     * formula lives in exactly one place. No stored field: derived, returned
+     * on the spot.
+     */
+    public int getAvailableBudget() {
+        return getBaseBudget() + this.bonusBudget - this.usedClaims;
+    }
+
+    /**
+     * Raises usedClaims by one — called when a chunk is claimed (or gained via
+     * overclaim). No guard: going up is always valid. The budget CHECK that
+     * decides whether this should be called lives in the caller.
+     */
+    public void incrementUsedClaims() {
+        this.usedClaims = this.usedClaims + 1;
+    }
+
+    /**
+     * Lowers usedClaims by one — called on unclaim, or on losing a chunk to an
+     * enemy overclaim. Floored at zero: usedClaims is a count and cannot
+     * logically be negative. Same guard pattern as removePower().
+     */
+    public void decrementUsedClaims() {
+        if (this.usedClaims > 0) {
+            this.usedClaims = this.usedClaims - 1;
+        }
+    }
 }

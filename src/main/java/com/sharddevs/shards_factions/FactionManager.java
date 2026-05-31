@@ -21,4 +21,17 @@ public class FactionManager {
         this.factions.put(faction.getId(), faction);
         return faction;
     }
+    public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
+        if (getClaim(chunk) != null) {
+            return ClaimResult.ALREADY_CLAIMED;
+        }
+        if (faction.getAvailableBudget() <= 0) {
+            return ClaimResult.NO_BUDGET;
+        }
+        Claim newClaim = new Claim(chunk, faction.getId());
+            claims.put(chunk, newClaim);
+            faction.incrementUsedClaims();
+            return ClaimResult.SUCCESS;
+
+    }
 }
