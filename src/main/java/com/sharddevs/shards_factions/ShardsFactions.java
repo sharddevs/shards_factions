@@ -13,7 +13,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.minecraft.world.level.ChunkPos;
-
+import net.neoforged.neoforge.event.RegisterCommandsEvent;
 /**
  * Main entry point for the shards_factions mod.
  *
@@ -56,6 +56,10 @@ public class ShardsFactions {
         data.getManager().createFaction("PersistTest", UUID.randomUUID(), FactionType.PLAYER);
         data.setDirty();
         LOGGER.info("[shards_factions] created PersistTest, marked dirty");
+    }
+    @SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        FactionCommand.register(event.getDispatcher());
     }
 
     /**
