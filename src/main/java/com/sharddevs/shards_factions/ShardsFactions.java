@@ -6,11 +6,13 @@ package com.sharddevs.shards_factions;
 import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
+import java.util.UUID;
 
 import net.neoforged.fml.common.Mod;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.common.NeoForge;
+import net.minecraft.world.level.ChunkPos;
 
 /**
  * Main entry point for the shards_factions mod.
@@ -38,7 +40,14 @@ public class ShardsFactions {
 
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
-        LOGGER.info("[shards_factions] test hook fired - server starting.");
+        LOGGER.info("[shards_factions] Test Faction should be created after this line");
+        FactionManager manager = new FactionManager();
+        Faction faction = manager.createFaction("TestFaction", UUID.randomUUID(), FactionType.PLAYER);
+        ChunkPos chunk = new ChunkPos(0, 0);
+        ClaimResult first = manager.claimChunk(chunk, faction);
+        LOGGER.info("[shards_factions] claim attempt 1: {}", first);
+        ClaimResult second = manager.claimChunk(chunk, faction);
+        LOGGER.info("[shards_factions] (This one should fail) claim attempt 2: {}", second);
     }
 
     /**
