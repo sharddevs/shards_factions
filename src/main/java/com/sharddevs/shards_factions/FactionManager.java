@@ -6,6 +6,9 @@ import java.util.HashMap;
 import java.util.Collection;
 
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 
 public class FactionManager {
     private final Map<UUID, Faction> factions = new HashMap<>();
@@ -40,6 +43,19 @@ public class FactionManager {
         }
         return null;  // not in any faction
     }
+    public void disbandFaction(Faction faction) {
+        UUID id = faction.getId();
+
+        // Sweep claims belonging to this faction. removeIf walks the
+        // collection and removes matching entries safely — a plain for-loop
+        // calling claims.remove(...) mid-iteration throws.
+        claims.values().removeIf(claim -> claim.getClaimedBy().equals(id));
+
+        // TODO: remove the faction's Obelisk from the world (Addendum 1 §13.7).
+        //       Obelisk not built yet — no-op stub for now.
+
+        factions.remove(id);
+    }
     public Faction getFactionByName(String name) {
         for (Faction faction : this.factions.values()) {
             if (faction.getName().equalsIgnoreCase(name)) {
@@ -48,7 +64,8 @@ public class FactionManager {
         }
         return null;
     }
-
+    private final Map<UUID, Long> pendingDisband = new HashMap<>();
+    public Map<UUID, Long> getPendingDisband() { return pendingDisband; }
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
         if (getClaim(chunk) != null) {
             return ClaimResult.ALREADY_CLAIMED;
@@ -64,6 +81,17 @@ public class FactionManager {
     }
     public void addClaim(Claim claim) {
         this.claims.put(claim.getChunk(), claim);
+    }
+    public void removeClaim(ChunkPos chunk) {
+        this.claims.remove(chunk);
+    }
+    public void notifyFaction(Faction faction, Component message, MinecraftServer server) {
+        for (UUID memberId : faction.getMembers()) {
+            ServerPlayer member = server.getPlayerList().getPlayer(memberId);
+            if (member != null) {
+                member.sendSystemMessage(message);
+            }
+        }
     }
     public Collection<Faction> getAllFactions() {
         return this.factions.values();

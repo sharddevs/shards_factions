@@ -15,6 +15,7 @@
 //   MEMBER METHODS — everything that touches the members map.
 //   POWER METHODS  — everything that touches the power field.
 //   BUDGET METHODS — everything that touches the claim budget.
+//   INVITE METHODS — everything that touches the invites map.
 // ===========================================================================
 
 // [§12] package — must match this file's folder path:
@@ -78,12 +79,27 @@ public class Faction {
     // final. With baseBudget + bonusBudget, this is the third budget term.
     private int usedClaims;
 
+    // [§10] Map<UUID, Long> — pending invites: invited player id -> the
+    // millisecond timestamp the invite was issued. [§11] final fixes the
+    // slot; the map's CONTENTS change as invites are issued, accepted, or
+    // expire. Addendum 2 §19.3: an invite is valid for 300s after issue.
+    // NOT persisted — invites are ephemeral, like the disband-pending map.
+    private final Map<UUID, Long> invites = new HashMap<>();
+
     // -----------------------------------------------------------------------
-    // CONSTRUCTOR — [§6] runs once, when a new Faction is created with 'new'.
+    // CONSTRUCTORS — [§6] run once, when a new Faction object is created.
+    //
+    // There are TWO, for two different situations:
+    //   3-arg — a BRAND NEW faction (/f new). Generates a fresh id, seeds the
+    //           owner into the members map, sets starting power.
+    //   7-arg — a faction REBUILT FROM DISK by FactionSavedData.load. Every
+    //           value comes from saved NBT; the members map is created empty
+    //           here and load() re-fills it afterward with addMemberWithRole,
+    //           restoring each member at their saved role.
     // -----------------------------------------------------------------------
 
     /**
-     * Creates a new faction.
+     * Creates a BRAND NEW faction (used by /f new).
      *
      * @param name  the faction's name
      * @param owner the UUID of the player who owns it
@@ -116,6 +132,15 @@ public class Faction {
         this.bonusBudget = 0;
         this.usedClaims = 0;
     }
+
+    /**
+     * Rebuilds a faction FROM SAVED DATA (used by FactionSavedData.load).
+     * Every field value comes straight from NBT — nothing is generated.
+     *
+     * The members map is created EMPTY here. load() fills it immediately
+     * afterward via addMemberWithRole, so each member (owner included) is
+     * restored with the exact role that was saved.
+     */
     public Faction(UUID id, String name, UUID owner, FactionType type, int power, int bonusBudget, int usedClaims) {
         this.id = id;
         this.name = name;
@@ -127,6 +152,7 @@ public class Faction {
 
         this.members = new HashMap<>();
     }
+
     // -----------------------------------------------------------------------
     // GETTERS — [§5] simple identity reads. These hand a private field
     // straight back. Subsystem-specific reads live in their own sections
@@ -157,7 +183,9 @@ public class Faction {
     }
 
     // -----------------------------------------------------------------------
-    // MEMBER METHODS — [§5][§10] controlled changes to the members map.
+    // MEMBER METHODS — [§5][§10] controlled changes to, and reads of, the
+    // members map. Anything that asks "who is in this faction / what is their
+    // role" lives here, next to the map it reads.
     // -----------------------------------------------------------------------
 
     /**
@@ -171,12 +199,24 @@ public class Faction {
             this.members.put(playerId, FactionRole.MEMBER);
         }
     }
+
+    /**
+     * Adds a player with an EXPLICIT role (not the default MEMBER).
+     * Used by FactionSavedData.load to restore each saved member at the
+     * exact role they were saved with.
+     */
     public void addMemberWithRole(UUID playerId, FactionRole role) {
         this.members.put(playerId, role);
     }
+
+    /**
+     * True if this player is in the faction at all (any role).
+     * [§10] containsKey returns true/false directly.
+     */
     public boolean isMember(UUID playerId) {
         return this.members.containsKey(playerId);
     }
+
     /**
      * Removes a player from this faction.
      *
@@ -197,14 +237,45 @@ public class Faction {
     public int getMemberCount() {
         return this.members.size();
     }
+
+    /**
+     * The player's role in this faction, or null if they are not a member.
+     * [§10] map.get returns null for an absent key.
+     */
     public FactionRole getRole(UUID playerId) {
         return this.members.get(playerId);
+    }
+
+    /**
+     * True if the player is OFFICER or OWNER — the "elevated rank" test.
+     *
+     * This is the shared permission gate behind /f claim, /f unclaim,
+     * /f invite and /f kick (the "are you allowed to do faction-management
+     * actions at all" check). Putting it in ONE method means the rule lives
+     * in one place: if the rank model ever changes, only this line changes,
+     * not four copies in the command file.
+     *
+     * Written as "== OWNER || == OFFICER" rather than "!= MEMBER" on purpose
+     * — if FactionRole ever gains a fourth value, "!= MEMBER" would silently
+     * let it through; the explicit form will not.
+     *
+     * [§5] returns boolean. getRole may return null (non-member); null
+     * equals neither OWNER nor OFFICER, so a non-member correctly gets false.
+     */
+    public boolean isAtLeastOfficer(UUID playerId) {
+        FactionRole role = getRole(playerId);
+        return role == FactionRole.OWNER || role == FactionRole.OFFICER;
     }
 
     // -----------------------------------------------------------------------
     // POWER METHODS — [§5] controlled access to the power field.
     // Because 'power' is private, these methods are the ONLY way outside code
     // touches it — so the design's power RULES get enforced in one place.
+    //
+    // NOTE (carried from the build session): the design treats power and the
+    // claim budget as TWO systems, but a decision was taken that they should
+    // be ONE. That refactor is not done — see the handoff. For now power is a
+    // flat 10 and these methods are unused by live commands.
     // -----------------------------------------------------------------------
 
     /**
@@ -302,5 +373,43 @@ public class Faction {
         if (this.usedClaims > 0) {
             this.usedClaims = this.usedClaims - 1;
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // INVITE METHODS — [§5][§10] controlled access to the invites map.
+    // Addendum 2 §19.3: an invite is valid for 300 seconds after it is
+    // issued. The 300s rule lives INSIDE hasValidInvite — callers just ask
+    // "valid invite?" and never touch the timestamp themselves.
+    // -----------------------------------------------------------------------
+
+    /**
+     * Issues an invite to a player — stores the current time as the issue
+     * timestamp. Re-inviting an already-invited player just refreshes the
+     * timestamp, which restarts their 300s window.
+     */
+    public void addInvite(UUID playerId) {
+        this.invites.put(playerId, System.currentTimeMillis());
+    }
+
+    /**
+     * True only if this player has an invite AND it has not expired.
+     * [§10] map.get returns null if the key is absent — checked first, or
+     * the subtraction below would throw on a null Long.
+     */
+    public boolean hasValidInvite(UUID playerId) {
+        Long issued = this.invites.get(playerId);
+        if (issued == null) {
+            return false;
+        }
+        // 300_000 ms = 300 s. Underscores are just visual digit grouping.
+        return System.currentTimeMillis() - issued < 300_000;
+    }
+
+    /**
+     * Removes a player's invite — called when they accept (/f join) so the
+     * invite is single-use.
+     */
+    public void removeInvite(UUID playerId) {
+        this.invites.remove(playerId);
     }
 }
