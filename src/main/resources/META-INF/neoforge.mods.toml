@@ -1,0 +1,57 @@
+# neoforge.mods.toml — metadata manifest for shards_factions.
+# NeoForge reads this BEFORE any mod code runs. It is not code; it is the
+# mod's ID card. Must live at src/main/resources/META-INF/neoforge.mods.toml.
+
+# The mod-loader this file targets, and the version range of that loader it
+# understands. "javafml" is the standard loader for Java mods using @Mod.
+modLoader = "javafml"
+loaderVersion = "[4,)"
+
+# License for the mod's distribution. Required field. Free text — set to
+# whatever you intend to release under. "All Rights Reserved" until decided.
+license = "All Rights Reserved"
+
+# A [[mods]] block describes one mod. This file declares exactly one.
+[[mods]]
+# THE mod id. Must match @Mod("shards_factions") in the main class exactly.
+# Lowercase, no spaces. This string is the mod's identity everywhere.
+modId = "shards_factions"
+
+# Mod version. ${file.jarVersion} is substituted at build time from the
+# 'version' set in build.gradle (0.1.0-SNAPSHOT) — single source of truth.
+version = "${file.jarVersion}"
+
+# Human-readable name shown in the in-game mod list.
+displayName = "Shards Factions"
+
+# Free-text description shown in the mod list.
+description = '''
+Faction land-claim and territory-protection mod for the Aeronautic Warfare
+PvP modpack. Bases cannot be sneaked down — only assaulted.
+'''
+
+# Authorship — shown in the mod list.
+authors = "sharddevs"
+
+# A [[dependencies.<modId>]] block declares something this mod requires.
+# The <modId> in the header MUST match the modId above.
+
+# Depend on NeoForge itself. type="required" means the game refuses to load
+# without it. versionRange pins the NeoForge version this mod is built for;
+# 21.1.230 is our locked target, so require 21.1.x and up.
+[[dependencies.shards_factions]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.230,)"
+# ordering only matters when two mods touch the same things at startup;
+# "NONE" = no constraint. side BOTH = needed on client and server.
+ordering = "NONE"
+side = "BOTH"
+
+# Depend on Minecraft itself, pinned to the 1.21.1 line.
+[[dependencies.shards_factions]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.21.2)"
+ordering = "NONE"
+side = "BOTH"

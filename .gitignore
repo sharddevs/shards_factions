@@ -1,0 +1,46 @@
+# ─── Gradle ───────────────────────────────────────────────
+.gradle/
+build/
+ 
+# ─── NeoForge dev runs ────────────────────────────────────
+# Working dir for ./gradlew runClient / runServer — worlds, logs, configs.
+run/
+runs/
+ 
+# ─── IDE: IntelliJ IDEA ───────────────────────────────────
+.idea/
+*.iml
+ 
+# ─── IDE: Eclipse / VS Code (in case of switching) ────────
+.settings/
+.project
+.classpath
+bin/
+.vscode/
+ 
+# ─── Logs & crash reports ─────────────────────────────────
+*.log
+crash-reports/
+ 
+# ─── OS cruft ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ 
+# ─── Secrets ──────────────────────────────────────────────
+# Maven publish credentials must NEVER be committed.
+# Keep them in ~/.gradle/gradle.properties (global), not in the project.
+# If a project-level gradle.properties exists, it is ignored here as a
+# safety net — see notes if you need to track non-secret project config.
+gradle.properties
+ 
+# ─── One-time tooling ─────────────────────────────────────
+# The rename script has served its purpose; ignore it from the repo.
+# (Delete it instead if you prefer — your call.)
+rename-mod.sh
+ 
+# ─── NOT ignored (committed on purpose) ───────────────────
+# gradle/wrapper/gradle-wrapper.jar   -> required to build
+# gradle/wrapper/gradle-wrapper.properties
+# gradlew, gradlew.bat
+# libs/                               -> contains a local dependency jar
+#                                        the build needs; must be tracked
