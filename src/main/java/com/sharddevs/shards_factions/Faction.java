@@ -13,7 +13,6 @@
 // "getter vs setter". A method lives with the data it operates on:
 //   GETTERS        — simple identity reads (name, owner, id, type, members).
 //   MEMBER METHODS — everything that touches the members map.
-//   POWER METHODS  — everything that touches the power field.
 //   BUDGET METHODS — everything that touches the claim budget.
 //   INVITE METHODS — everything that touches the invites map.
 // ===========================================================================
@@ -58,10 +57,6 @@ public class Faction {
     // join, leave, or have their role changed.
     private final Map<UUID, FactionRole> members;
 
-    // [§3] int — the faction's live power pool (design §6). NOT final: power
-    // changes constantly (drops on death, regens on tick).
-    private int power;
-
     // [§3][§11] the faction's permanent unique id, generated at creation.
     private final UUID id;
 
@@ -90,9 +85,9 @@ public class Faction {
     // CONSTRUCTORS — [§6] run once, when a new Faction object is created.
     //
     // There are TWO, for two different situations:
-    //   3-arg — a BRAND NEW faction (/f new). Generates a fresh id, seeds the
-    //           owner into the members map, sets starting power.
-    //   7-arg — a faction REBUILT FROM DISK by FactionSavedData.load. Every
+    //   3-arg — a BRAND NEW faction (/f new). Generates a fresh id and seeds
+    //           the owner into the members map.
+    //   6-arg — a faction REBUILT FROM DISK by FactionSavedData.load. Every
     //           value comes from saved NBT; the members map is created empty
     //           here and load() re-fills it afterward with addMemberWithRole,
     //           restoring each member at their saved role.
@@ -118,10 +113,6 @@ public class Faction {
         this.members = new HashMap<>();
         this.members.put(owner, FactionRole.OWNER);
 
-        // Starting power. 10 is a placeholder — real value is configurable
-        // (design §12), wired up later.
-        this.power = 10;
-
         // [§8] every faction generates its own permanent id at creation.
         this.id = UUID.randomUUID();
         this.type = type;
@@ -141,12 +132,11 @@ public class Faction {
      * afterward via addMemberWithRole, so each member (owner included) is
      * restored with the exact role that was saved.
      */
-    public Faction(UUID id, String name, UUID owner, FactionType type, int power, int bonusBudget, int usedClaims) {
+    public Faction(UUID id, String name, UUID owner, FactionType type, int bonusBudget, int usedClaims) {
         this.id = id;
         this.name = name;
         this.owner = owner;
         this.type = type;
-        this.power = power;
         this.bonusBudget = bonusBudget;
         this.usedClaims = usedClaims;
 
@@ -156,7 +146,7 @@ public class Faction {
     // -----------------------------------------------------------------------
     // GETTERS — [§5] simple identity reads. These hand a private field
     // straight back. Subsystem-specific reads live in their own sections
-    // below (getPower with POWER, getUsedClaims with BUDGET, etc.).
+    // below (getUsedClaims with BUDGET, getRole with MEMBER, etc.).
     // -----------------------------------------------------------------------
 
     public String getName() {
@@ -268,47 +258,11 @@ public class Faction {
     }
 
     // -----------------------------------------------------------------------
-    // POWER METHODS — [§5] controlled access to the power field.
-    // Because 'power' is private, these methods are the ONLY way outside code
-    // touches it — so the design's power RULES get enforced in one place.
-    //
-    // NOTE (carried from the build session): the design treats power and the
-    // claim budget as TWO systems, but a decision was taken that they should
-    // be ONE. That refactor is not done — see the handoff. For now power is a
-    // flat 10 and these methods are unused by live commands.
-    // -----------------------------------------------------------------------
-
-    /**
-     * Reads the current power value.
-     */
-    public int getPower() {
-        return this.power;
-    }
-
-    /**
-     * Increases power by the given amount (used by the regen tick later).
-     */
-    public void addPower(int amount) {
-        this.power = this.power + amount;
-    }
-
-    /**
-     * Decreases power by the given amount (used when a member dies later),
-     * but never below zero.
-     */
-    public void removePower(int amount) {
-        this.power = this.power - amount;
-
-        // Enforce the floor. This 'if' is exactly WHY power is private and
-        // changes go through a method: the rule "power can't go negative"
-        // lives in one place and cannot be bypassed from outside.
-        if (this.power < 0) {
-            this.power = 0;
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // BUDGET METHODS — [§5] the claim-budget system (design §6).
+    //
+    // Addendum 4: "power" and "claim budget" are ONE concept. There is no
+    // separate stored power value — a faction's power IS its available
+    // budget. This section is the whole system.
     //
     // Three terms decide whether a faction may claim another chunk:
     //   baseBudget  — DERIVED (member count * 10). A method, never a field,
@@ -350,6 +304,9 @@ public class Faction {
      * Calls getBaseBudget() rather than recomputing member*10, so the "base"
      * formula lives in exactly one place. No stored field: derived, returned
      * on the spot.
+     *
+     * Addendum 4: this value IS the faction's "power". There is no separate
+     * getPower() — callers that want power ask for the available budget.
      */
     public int getAvailableBudget() {
         return getBaseBudget() + this.bonusBudget - this.usedClaims;
@@ -367,7 +324,7 @@ public class Faction {
     /**
      * Lowers usedClaims by one — called on unclaim, or on losing a chunk to an
      * enemy overclaim. Floored at zero: usedClaims is a count and cannot
-     * logically be negative. Same guard pattern as removePower().
+     * logically be negative.
      */
     public void decrementUsedClaims() {
         if (this.usedClaims > 0) {

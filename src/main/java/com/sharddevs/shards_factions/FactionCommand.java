@@ -168,7 +168,7 @@ public class FactionCommand {
                                     ctx.getSource().sendSuccess(
                                             () -> Component.literal(target.getName() + " Owned by " + target.getOwner() + "\n" +
                                                     "Member Count: " + target.getMemberCount() + "\n" +
-                                                    "Power: " + target.getPower() + "\n" +
+                                                    "Power: " + target.getUsedClaims() + " / " + (target.getBaseBudget() + target.getBonusBudget()) + "\n" +
                                                     "Claims: " + target.getUsedClaims() + "\n" +
                                                     "Claim Budget Available: " + target.getAvailableBudget()), false);
                                     return 1;

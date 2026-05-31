@@ -48,8 +48,6 @@ public class FactionSavedData extends SavedData {
             // factionTag.putString("name", ??? );
             factionTag.putUUID("owner", faction.getOwner());
             // factionTag.putUUID("owner", ??? );
-            factionTag.putInt("power", faction.getPower());
-            // factionTag.putInt("power", ??? );
             factionTag.putInt("bonusBudget", faction.getBonusBudget());
             // factionTag.putInt("bonusBudget", ??? );
             factionTag.putInt("usedClaims", faction.getUsedClaims());
@@ -94,7 +92,6 @@ public class FactionSavedData extends SavedData {
                     factionTag.getString("name"),
                     factionTag.getUUID("owner"),
                     FactionType.valueOf(factionTag.getString("type")),
-                    factionTag.getInt("power"),
                     factionTag.getInt("bonusBudget"),
                     factionTag.getInt("usedClaims")
             );
