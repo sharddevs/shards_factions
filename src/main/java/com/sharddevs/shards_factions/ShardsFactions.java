@@ -8,6 +8,9 @@ import org.slf4j.Logger;
 import com.mojang.logging.LogUtils;
 
 import net.neoforged.fml.common.Mod;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.common.NeoForge;
 
 /**
  * Main entry point for the shards_factions mod.
@@ -33,6 +36,11 @@ public class ShardsFactions {
     // LogUtils.getLogger() hands back a logger tagged to this class.
     private static final Logger LOGGER = LogUtils.getLogger();
 
+    @SubscribeEvent
+    public void onServerStarting(ServerStartingEvent event) {
+        LOGGER.info("[shards_factions] test hook fired - server starting.");
+    }
+
     /**
      * NeoForge calls this constructor during mod loading. Right now it does
      * one thing: log that the mod is alive. If you see this line in the
@@ -40,5 +48,6 @@ public class ShardsFactions {
      */
     public ShardsFactions() {
         LOGGER.info("shards_factions loaded.");
+        NeoForge.EVENT_BUS.register(this);
     }
 }
