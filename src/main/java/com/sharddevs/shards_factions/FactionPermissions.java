@@ -1,20 +1,38 @@
 package com.sharddevs.shards_factions;
 
-import net.minecraft.server.level.ServerPlayer;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.server.permission.events.PermissionGatherEvent;
 import net.neoforged.neoforge.server.permission.nodes.PermissionNode;
 import net.neoforged.neoforge.server.permission.nodes.PermissionTypes;
 
+// ===========================================================================
+// FactionPermissions — NeoForge PermissionAPI nodes (Addendum 2 §18 layer).
+//
+// Standalone: depends only on NeoForge's PermissionAPI, NOT the LuckPerms API
+// jar. A permission manager (LuckPerms etc.) plugs in automatically if present
+// and can grant/revoke these nodes; absent one, the node's default resolver
+// (below) is the final word.
+//
+// Nodes are stored static and registered on PermissionGatherEvent.Nodes,
+// which fires on the GAME bus (FactionPermissions.class is registered to
+// NeoForge.EVENT_BUS in ShardsFactions' constructor).
+//
+// GOTCHA: querying an UNREGISTERED node throws. Because the command tree is
+// sent to clients during the join handshake (which runs the .requires
+// predicates that query these nodes), a null/unregistered node does not fail
+// the command quietly — it bricks player JOIN with "Invalid player data".
+// So: every node a command .requires MUST be assigned AND addNodes'd here.
+// ===========================================================================
 public class FactionPermissions {
 
-    // Everyday gameplay node — default TRUE for everyone. The in-handler
-    // role gates (§16.2) do the real authority work; this layer just lets a
-    // server admin revoke per-group via a permission manager if they want.
+    // /f map — explicit-grant-only (resolver -> false). On a server with no
+    // permission manager, nobody can use /f map until the node is granted.
+    // (This was a deliberate choice; see §18 — gated even though it's a
+    // gameplay command.)
     public static PermissionNode<Boolean> MAP;
 
-    // Bypass — default OP-FALSE. Not even OPs get it without an explicit
-    // grant (§13.5: "not merely OP"). The one node that is genuinely gated.
+    // /f bypass — explicit-grant-only (resolver -> false). Not even OPs get it
+    // without a grant (§13.5: "not merely OP"). The genuinely-locked node.
     public static PermissionNode<Boolean> BYPASS;
 
     @SubscribeEvent

@@ -1,74 +1,106 @@
 package com.sharddevs.shards_factions;
 
-import java.util.UUID;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.Collection;
-import java.util.List;
 import java.util.ArrayList;
-import java.util.Set;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
-import net.minecraft.world.level.ChunkPos;
+import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
-// ChatFormatting — needed for the faction-colour assignment below.
-import net.minecraft.ChatFormatting;
+import net.minecraft.world.level.ChunkPos;
 
+// ===========================================================================
+// FactionManager — the live, in-memory home for all factions and claims, and
+// the logic that operates on them. FactionSavedData wraps one of these and
+// persists its contents; everything stateful (membership, claims, budget,
+// overclaim, bypass) lives here.
+//
+// NOTE: mutations here are memory-only. The caller (command / event layer)
+// is responsible for FactionSavedData.setDirty() after a persisted change
+// (Addendum 8 §51.3).
+// ===========================================================================
 public class FactionManager {
+
+    // -----------------------------------------------------------------------
+    // STATE
+    // -----------------------------------------------------------------------
     private final Map<UUID, Faction> factions = new HashMap<>();
     private final Map<ChunkPos, Claim> claims = new HashMap<>();
+    private final Map<UUID, Long> pendingDisband = new HashMap<>();   // /f disband two-step confirm (ephemeral)
+    private final Set<UUID> bypassingPlayers = new HashSet<>();        // /f bypass toggles (ephemeral, §47)
 
+    // Synthetic owner of all system factions (SAFEZONE / WARZONE). No real
+    // player has the all-zeros UUID — a safe "owned by the server" sentinel.
+    public static final UUID SERVER_OWNER = new UUID(0L, 0L);
+
+    // -----------------------------------------------------------------------
+    // LOOKUPS
+    // -----------------------------------------------------------------------
     public Faction getFaction(UUID id) {
         return this.factions.get(id);
     }
+
     public Claim getClaim(ChunkPos chunk) {
         return this.claims.get(chunk);
     }
 
+    public Faction getFactionByMember(UUID player) {
+        for (Faction faction : this.factions.values()) {
+            if (faction.isMember(player)) return faction;
+        }
+        return null;   // not in any faction
+    }
+
+    public Faction getFactionByName(String name) {
+        for (Faction faction : this.factions.values()) {
+            if (faction.getName().equalsIgnoreCase(name)) return faction;
+        }
+        return null;
+    }
+
+    public Collection<Faction> getAllFactions() {
+        return this.factions.values();
+    }
+
+    public Collection<Claim> getAllClaims() {
+        return this.claims.values();
+    }
+
+    public Collection<Claim> getClaimsByFaction(UUID factionId) {
+        List<Claim> result = new ArrayList<>();
+        for (Claim claim : this.claims.values()) {
+            if (claim.getClaimedBy().equals(factionId)) result.add(claim);
+        }
+        return result;
+    }
+
     // -----------------------------------------------------------------------
-    // COLOUR ASSIGNMENT  —  picks a display colour for a brand-new faction.
+    // COLOUR ASSIGNMENT — least-used colour for a new faction (HANDOFF_6 §5/§6).
     //
-    // Rule (HANDOFF_6 §6 / §5): "auto-assigned at creation, least-used
-    // colour". Count how many existing factions already use each colour;
-    // pick a colour with the lowest count. With <=16 factions every colour
-    // chosen is unused (count 0); past 16, the count tie-breaks so usage
-    // stays as even as possible.
-    //
-    // CRITICAL: ChatFormatting holds BOTH the 16 colours AND style codes
-    // (BOLD, ITALIC, UNDERLINE, OBFUSCATED, STRIKETHROUGH, RESET). A faction
-    // colour must be an actual COLOUR — .isColor() filters the styles out.
-    // Without that filter a faction could be assigned "BOLD" as its colour,
-    // which has no .getColor() RGB and would render wrong on the /f map grid.
-    //
-    // private — this is createFaction's internal helper, nothing else calls
-    // it. static — it needs no instance state; it only reads the factions
-    // map passed in via the loop below (it walks this.factions directly, so
-    // it is an instance method after all — kept non-static for that access).
+    // Seed every real colour at 0, count usage across existing factions, pick
+    // the lowest. <=16 factions: every pick is unused; past 16, ties keep
+    // usage even. ChatFormatting holds styles (BOLD, ITALIC…) too, so
+    // .isColor() filters to actual colours — a style has no RGB and would
+    // render wrong on the /f map grid.
     // -----------------------------------------------------------------------
     private ChatFormatting pickLeastUsedColor() {
-        // Tally: colour -> how many existing factions already use it.
         Map<ChatFormatting, Integer> usage = new HashMap<>();
 
-        // Seed every real colour at count 0, so a never-used colour is still
-        // a candidate (a colour absent from the map would be skipped).
         for (ChatFormatting cf : ChatFormatting.values()) {
-            if (cf.isColor()) {
-                usage.put(cf, 0);
-            }
+            if (cf.isColor()) usage.put(cf, 0);
         }
-
-        // Count actual usage across all existing factions.
         for (Faction faction : this.factions.values()) {
             ChatFormatting used = faction.getColor();
-            // getOrDefault: if 'used' somehow isn't a key (shouldn't happen,
-            // every colour was seeded) treat it as 0 rather than NPE.
             usage.put(used, usage.getOrDefault(used, 0) + 1);
         }
 
-        // Walk the tally, keep the colour with the smallest count seen so far.
-        ChatFormatting best = ChatFormatting.WHITE; // safe fallback
+        ChatFormatting best = ChatFormatting.WHITE;   // safe fallback
         int bestCount = Integer.MAX_VALUE;
         for (Map.Entry<ChatFormatting, Integer> entry : usage.entrySet()) {
             if (entry.getValue() < bestCount) {
@@ -78,110 +110,99 @@ public class FactionManager {
         }
         return best;
     }
-    public static final UUID SERVER_OWNER = new UUID(0L, 0L);
+
+    // -----------------------------------------------------------------------
+    // FACTION LIFECYCLE
+    // -----------------------------------------------------------------------
     public CreateResult createFaction(String name, UUID owner, FactionType type) {
         for (Faction faction : this.factions.values()) {
-            if (faction.getName().equalsIgnoreCase(name)) {
-                return CreateResult.NAME_TAKEN;
-            }
+            if (faction.getName().equalsIgnoreCase(name)) return CreateResult.NAME_TAKEN;
         }
-        // Pick the colour BEFORE constructing — the 4-arg constructor now
-        // requires it. pickLeastUsedColor reads the current factions map,
-        // so it must run while this new faction is NOT yet in the map
-        // (otherwise it would count a faction with no colour assigned).
+        // Pick the colour BEFORE the new faction is in the map, or it would
+        // count itself (with no colour yet assigned).
         ChatFormatting color = pickLeastUsedColor();
         Faction faction = new Faction(name, owner, type, color);
         this.factions.put(faction.getId(), faction);
         return CreateResult.SUCCESS;
-
     }
+
     public void addFaction(Faction faction) {
         this.factions.put(faction.getId(), faction);
     }
-    public Faction getFactionByMember(UUID player) {
-        for (Faction faction : this.factions.values()) {
-            // if this faction has `player` as a member, return it
-            if (faction.isMember(player)) {
-                return faction;
-            }
-        }
-        return null;  // not in any faction
-    }
+
     public void disbandFaction(Faction faction) {
         UUID id = faction.getId();
 
-        // Sweep claims belonging to this faction. removeIf walks the
-        // collection and removes matching entries safely — a plain for-loop
-        // calling claims.remove(...) mid-iteration throws.
+        // removeIf is the safe sweep — a plain loop calling claims.remove(...)
+        // mid-iteration would throw.
         claims.values().removeIf(claim -> claim.getClaimedBy().equals(id));
 
-        // TODO: remove the faction's Obelisk from the world (Addendum 1 §13.7).
-        //       Obelisk not built yet — no-op stub for now.
+        // The faction's placed Obelisk (if any) is aired out command-side in
+        // /f disband BEFORE this call, so the block's onRemove resolves against
+        // a still-existing faction (Addendum 1 §13.7). Nothing to do here.
 
         factions.remove(id);
     }
-    public Faction getFactionByName(String name) {
-        for (Faction faction : this.factions.values()) {
-            if (faction.getName().equalsIgnoreCase(name)) {
-                return faction;
-            }
-        }
-        return null;
+
+    public Map<UUID, Long> getPendingDisband() {
+        return pendingDisband;
     }
-    private final Map<UUID, Long> pendingDisband = new HashMap<>();
-    public Map<UUID, Long> getPendingDisband() { return pendingDisband; }
+
+    // -----------------------------------------------------------------------
+    // CLAIMS + OVERCLAIM (Addendum 2 §17, condition corrected this session)
+    // -----------------------------------------------------------------------
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
-        // One lookup, stored once. Tells us claimed vs. unclaimed for the
-        // whole method — no need to call getClaim(chunk) again below.
+        // One lookup: claimed vs unclaimed for the whole method.
         Claim existing = getClaim(chunk);
 
         if (existing != null) {
-            // ── chunk is already owned by someone ──
+            // ── already owned by someone ──
 
-            // Own-faction guard. If WE already own it there's nothing to claim
-            // or overclaim — bail before running overclaim logic against
-            // ourselves (which would compare the faction to itself).
+            // Own-faction guard — nothing to claim/overclaim against ourselves.
             if (existing.getClaimedBy().equals(faction.getId())) {
                 return ClaimResult.ALREADY_CLAIMED;
             }
 
-            // The current owner B (victim). getFaction is the real lookup
-            // (not getFactionById). Owner id comes from getClaimedBy().
             Faction victim = getFaction(existing.getClaimedBy());
 
-            // The four §17.2 overclaim conditions, all expressed as "allowed":
-            //   1. victim overextended      — B.usedClaims > B.budget   (cond 2)
-            //   2. attacker has headroom    — A.usedClaims < A.budget   (cond 1)
-            //   3. attacker budget positive — A.budget > 0              (cond 3)
-            //   4. NOT B's obelisk chunk while B's obelisk stands       (cond 4)
-            // "power" = getAvailableBudget() (Addendum 4 — unified value).
-            // Obelisk null-check is FIRST inside the !( ) so a null pos
-            // short-circuits before new ChunkPos(null) can NPE.
-
+            // System-faction land is permanently protected, never overclaimable
+            // (§13.4). Reject before the power comparison.
             if (victim.getType() != FactionType.PLAYER) {
                 return ClaimResult.ALREADY_CLAIMED;
             }
+
+            // Overclaim conditions (§17.2). "power" = baseBudget + bonusBudget
+            // — the TOTAL the faction has, NOT getAvailableBudget() (which
+            // already subtracts usedClaims and would double-count it; that was
+            // a real bug fixed this session). A faction is overextended when
+            // its claims exceed its power:
+            //   1. victim overextended      — B.used > B.power
+            //   2. attacker has headroom    — A.used < A.power
+            //   3. attacker power positive  — A.power > 0
+            //   4. NOT B's obelisk chunk while B's obelisk stands (null-check
+            //      first so new ChunkPos(null) can't NPE)
             if (victim.getUsedClaims() > victim.getBaseBudget() + victim.getBonusBudget()
                     && faction.getUsedClaims() < faction.getBaseBudget() + faction.getBonusBudget()
                     && faction.getBaseBudget() + faction.getBonusBudget() > 0
                     && !(victim.getObeliskPos() != null
                     && chunk.equals(new ChunkPos(victim.getObeliskPos())))) {
 
-                // ── transfer (§17.4): two-sided, but the Claim object already
-                // lives in the manager's claims map keyed by this chunk, so we
-                // just flip its owner in place — no remove/re-add needed. ──
-                victim.decrementUsedClaims();          // B loses a claim
-                existing.setClaimedBy(faction.getId()); // chunk now owned by A
-                existing.setProtected(faction.getObeliskPos() != null);
-                faction.incrementUsedClaims();          // A gains a claim
+                // Transfer (§17.4): the Claim already lives in the map keyed by
+                // this chunk, so flip its owner in place — no remove/re-add.
+                victim.decrementUsedClaims();            // B loses a claim
+                existing.setClaimedBy(faction.getId());  // chunk now owned by A
+                existing.setProtected(faction.getObeliskPos() != null); // protection follows NEW owner
+                faction.incrementUsedClaims();           // A gains a claim
                 return ClaimResult.OVERCLAIM_SUCCESS;
             }
 
-            // Conditions failed — overclaim not allowed, fall back to reject.
+            // Not overclaimable — reject.
             return ClaimResult.ALREADY_CLAIMED;
         }
 
-        // ── unclaimed chunk — original normal-claim path, unchanged ──
+        // ── unclaimed — normal claim ──
+        // System factions are budget-exempt (§13.4); only PLAYER land hits
+        // the budget wall.
         if (faction.getAvailableBudget() <= 0 && faction.getType() == FactionType.PLAYER) {
             return ClaimResult.NO_BUDGET;
         }
@@ -190,49 +211,45 @@ public class FactionManager {
         faction.incrementUsedClaims();
         return ClaimResult.SUCCESS;
     }
-    private final Set<UUID> bypassingPlayers = new HashSet<>();
+
+    public void addClaim(Claim claim) {
+        this.claims.put(claim.getChunk(), claim);
+    }
+
+    public void removeClaim(ChunkPos chunk) {
+        this.claims.remove(chunk);
+    }
+
+    // NOTE: addOverclaim is identical to addClaim and appears unused (the
+    // overclaim path mutates the Claim in place, it doesn't re-add). Left in
+    // pending a confirm — safe to delete if nothing calls it.
+    public void addOverclaim(Claim claim) {
+        this.claims.put(claim.getChunk(), claim);
+    }
+
+    // -----------------------------------------------------------------------
+    // BYPASS (§47) — ephemeral admin protection-override toggles.
+    // -----------------------------------------------------------------------
     public boolean toggleBypass(UUID uuid) {
         if (bypassingPlayers.contains(uuid)) {
             bypassingPlayers.remove(uuid);
             return false;
-        } else {
-            bypassingPlayers.add(uuid);
-            return true;
         }
+        bypassingPlayers.add(uuid);
+        return true;
     }
+
     public boolean isBypassing(UUID uuid) {
         return bypassingPlayers.contains(uuid);
     }
-    public void addClaim(Claim claim) {
-        this.claims.put(claim.getChunk(), claim);
-    }
-    public void removeClaim(ChunkPos chunk) {
-        this.claims.remove(chunk);
-    }
-    public void addOverclaim(Claim claim) {
-        this.claims.put(claim.getChunk(), claim);
-    }
+
+    // -----------------------------------------------------------------------
+    // MESSAGING
+    // -----------------------------------------------------------------------
     public void notifyFaction(Faction faction, Component message, MinecraftServer server) {
         for (UUID memberId : faction.getMembers()) {
             ServerPlayer member = server.getPlayerList().getPlayer(memberId);
-            if (member != null) {
-                member.sendSystemMessage(message);
-            }
+            if (member != null) member.sendSystemMessage(message);
         }
-    }
-    public Collection<Faction> getAllFactions() {
-        return this.factions.values();
-    }
-    public Collection<Claim> getAllClaims() {
-        return this.claims.values();
-    }
-    public Collection<Claim> getClaimsByFaction(UUID factionId) {
-        List<Claim> result = new ArrayList<>();
-        for (Claim claim : this.claims.values()) {
-            if (claim.getClaimedBy().equals(factionId)) {
-                result.add(claim);
-            }
-        }
-        return result;
     }
 }

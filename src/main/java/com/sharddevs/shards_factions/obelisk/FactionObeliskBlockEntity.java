@@ -1,15 +1,21 @@
 package com.sharddevs.shards_factions.obelisk;
 
-import net.minecraft.core.BlockPos;
-import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.nbt.CompoundTag;          // NEW — NBT compound type
-import net.minecraft.core.HolderLookup;         // NEW — needed by save/loadAdditional
 import java.util.UUID;
 
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+
+// ===========================================================================
+// FactionObeliskBlockEntity — stores the owning faction id on the obelisk
+// block itself (Addendum 6 §38). Persisting the binding here is what lets it
+// survive restarts and chunk unloads, and lets onRemove know whose obelisk
+// was destroyed without scanning the world.
+// ===========================================================================
 public class FactionObeliskBlockEntity extends BlockEntity {
 
-    // Field moved ABOVE the constructor (convention — fields first).
     private UUID factionId = null;
 
     public FactionObeliskBlockEntity(BlockPos pos, BlockState state) {
@@ -22,7 +28,7 @@ public class FactionObeliskBlockEntity extends BlockEntity {
 
     public void setFactionId(UUID factionId) {
         this.factionId = factionId;
-        setChanged();                            // NEW — marks the BE dirty so the change persists
+        setChanged();   // marks the BE dirty so the binding persists
     }
 
     @Override
