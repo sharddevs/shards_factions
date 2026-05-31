@@ -225,7 +225,7 @@ public class Faction {
     // Combat: death drains power, but only while available is still positive,
     // so a kill can't push a faction's available below 0 (Addendum 8 §52.4).
     public void decrementBonusBudget() {
-        if (getAvailableBudget() > 0) {
+        if (getBaseBudget() + this.bonusBudget > 0) {
             this.bonusBudget--;
         }
     }

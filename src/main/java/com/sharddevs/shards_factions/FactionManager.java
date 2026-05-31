@@ -207,6 +207,7 @@ public class FactionManager {
             return ClaimResult.NO_BUDGET;
         }
         Claim newClaim = new Claim(chunk, faction.getId());
+        newClaim.setProtected(faction.getObeliskPos() != null);
         claims.put(chunk, newClaim);
         faction.incrementUsedClaims();
         return ClaimResult.SUCCESS;
