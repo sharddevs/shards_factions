@@ -1,23 +1,26 @@
 // ===========================================================================
 // FactionCommand.java  —  the /faction | /factions | /f command tree.
 //
-// Annotated for learning. This file builds ONE Brigadier command tree and
-// registers it under three aliases. Brigadier is Minecraft's command
-// framework; a command is a TREE of nodes:
-//   - literal node  — a fixed word the player types ("faction", "claim").
-//   - argument node — a typed slot the player fills (a name, a player).
-//   - executes(...) — the lambda that actually runs when that branch is hit.
+// Builds ONE Brigadier command tree and registers it under three aliases.
+// A command is a tree of nodes: literal (a fixed word), argument (a typed
+// slot), and executes(...) (the lambda that runs when a branch is hit).
 //
-// SHARED COMMAND SHAPE — every executes body below follows the same recipe:
-//   1. get the player + the FactionManager.
-//   2. GATES — a stack of `if (bad) { sendFailure; return 0; }` checks.
-//      RULE: every gate runs BEFORE any state is changed. Nothing that
-//      mutates data may run until all gates have passed.
-//   3. ACT — call the manager / faction to change state.
-//   4. setDirty() — ONLY if persisted data changed (members, claims).
-//      NOT for ephemeral data (invites, disband-pending) and NOT for reads.
+// Every executes body follows the same recipe:
+//   1. resolve the player + FactionManager.
+//   2. GATES — `if (bad) { sendFailure; return 0; }`, all before any mutation.
+//   3. ACT — mutate via the manager / faction.
+//   4. setDirty() — only when persisted data changed (members, claims,
+//      obelisk-give time). NOT for ephemeral state (invites, bypass,
+//      disband-pending, autoclaim) and NOT for pure reads.
 //   5. respond — sendSuccess to the runner, notifyFaction to the faction.
 //   6. return 1 (success) or 0 (failure).
+//
+// Command groups, in tree order:
+//   membership : new, join, leave, invite, kick, disband
+//   territory  : claim, unclaim, autoclaim, map
+//   roles      : promote, demote  (shared handleRoleChange)
+//   special    : obelisk give, bypass
+//   admin      : createsystem, join   (OP-gated)
 // ===========================================================================
 
 package com.sharddevs.shards_factions;
@@ -29,6 +32,8 @@ import com.mojang.brigadier.tree.LiteralCommandNode;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.core.BlockPos;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.arguments.EntityArgument;
@@ -36,302 +41,54 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.world.level.ChunkPos;
-// ChatFormatting — used by /f map to colour the grid cells.
 import net.minecraft.ChatFormatting;
-
+import net.minecraft.world.item.ItemStack;
+import net.neoforged.neoforge.server.permission.PermissionAPI;
+import com.sharddevs.shards_factions.obelisk.ObeliskRegistration;
 
 public class FactionCommand {
 
     /**
-     * Builds the whole /faction tree and registers it. Called once, from
-     * ShardsFactions.onRegisterCommands (wired to RegisterCommandsEvent).
-     *
-     * The tree is assembled into `faction` first; the three dispatcher.register
-     * calls at the bottom hand it to the game under all three aliases.
+     * Builds the whole /faction tree and registers it under all three
+     * aliases. Called once, from ShardsFactions.onRegisterCommands.
      */
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
 
-
         LiteralArgumentBuilder<CommandSourceStack> faction = Commands.literal("faction")
 
-                // ===========================================================
-                // /f new <name>  —  create a brand-new PLAYER faction.
-                // ===========================================================
+                // ===================== MEMBERSHIP =====================
+
+                // /f new <name> — create a brand-new PLAYER faction.
                 .then(Commands.literal("new")
                         .then(Commands.argument("name", StringArgumentType.word())
                                 .executes(ctx -> {
-                                    // getPlayerOrException: the command source
-                                    // as a player, or throw if it isn't one
-                                    // (console, command block). Guarantees a
-                                    // non-null player for the rest of the body.
                                     ServerPlayer player = ctx.getSource().getPlayerOrException();
                                     String name = StringArgumentType.getString(ctx, "name");
                                     FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-                                    // GATE: can't create a faction while in one.
                                     if (manager.getFactionByMember(player.getUUID()) != null) {
                                         ctx.getSource().sendFailure(
                                                 Component.literal("You are already in a faction!"));
                                         return 0;
                                     }
 
-                                    // ACT: createFaction returns a CreateResult
-                                    // enum, not the Faction itself.
                                     CreateResult result = manager.createFaction(
                                             name, player.getUUID(), FactionType.PLAYER);
-
-                                    // GATE on the result: name collision.
                                     if (result == CreateResult.NAME_TAKEN) {
                                         ctx.getSource().sendFailure(
                                                 Component.literal("A faction named '" + name + "' already exists!"));
                                         return 0;
                                     }
 
-                                    // persisted data (a new faction) changed.
                                     FactionSavedData.get(player.server).setDirty();
-
                                     ctx.getSource().sendSuccess(
                                             () -> Component.literal("Faction '" + name + "' created successfully!"), false);
-
-                                    // server-wide announcement: a new faction
-                                    // is news for everyone on a PvP server.
                                     player.server.getPlayerList().broadcastSystemMessage(
                                             Component.literal("[Shard's Factions] Faction '" + name + "' has been founded!"), false);
                                     return 1;
                                 })))
 
-                // ===========================================================
-                // /f claim  —  claim the chunk the player is standing in.
-                // ===========================================================
-                .then(Commands.literal("claim")
-                        .executes(ctx -> {
-                            ServerPlayer player = ctx.getSource().getPlayerOrException();
-                            FactionManager manager = FactionSavedData.get(player.server).getManager();
-                            ChunkPos chunk = player.chunkPosition();
-
-                            // GATE 1: must be in a faction.
-                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
-                            if (playerFaction == null) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("You are not in a faction!"));
-                                return 0;
-                            }
-                            // GATE 2: must be OFFICER+ (Addendum 2 section 18).
-                            // isAtLeastOfficer is the shared rank helper —
-                            // the rule lives in Faction, not copied here.
-                            if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("You must be an Officer or Owner to do this!"));
-                                return 0;
-                            }
-
-                            // ACT: claimChunk returns a ClaimResult enum.
-                            ClaimResult result = manager.claimChunk(chunk, playerFaction);
-
-                            // GATEs on the result. These come AFTER the act
-                            // because they branch on what it returned — unlike
-                            // GATEs 1/2, which decide whether to act at all.
-                            if (result == ClaimResult.ALREADY_CLAIMED) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("This chunk is already claimed."));
-                                return 0;
-                            }
-                            if (result == ClaimResult.NO_BUDGET) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("Your faction has no power left to claim land!"));
-                                return 0;
-                            }
-
-                            FactionSavedData.get(player.server).setDirty();
-                            manager.notifyFaction(playerFaction,
-                                    Component.literal(player.getName().getString() + " has claimed a chunk for the faction!"),
-                                    player.server);
-                            ctx.getSource().sendSuccess(
-                                    () -> Component.literal("Chunk claimed for '" + playerFaction.getName() + "'!"), false);
-                            return 1;
-                        }))
-
-                // ===========================================================
-                // /f info <name>  —  read-only readout of a faction.
-                // ===========================================================
-                .then(Commands.literal("info")
-                        .then(Commands.argument("name", StringArgumentType.word())
-                                .executes(ctx -> {
-                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
-                                    String name = StringArgumentType.getString(ctx, "name");
-                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
-
-                                    // here `target` is a Faction — looked up
-                                    // by name. (Other commands use `target`
-                                    // for a player; the name is reused, the
-                                    // type is not — watch which is which.)
-                                    Faction target = manager.getFactionByName(name);
-                                    if (target == null) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("No faction named '" + name + "' exists!"));
-                                        return 0;
-                                    }
-
-                                    // pure read — no setDirty, no notify.
-                                    ctx.getSource().sendSuccess(
-                                            () -> Component.literal(target.getName() + " Owned by " + target.getOwner() + "\n" +
-                                                    "Member Count: " + target.getMemberCount() + "\n" +
-                                                    "Power: " + target.getUsedClaims() + " / " + (target.getBaseBudget() + target.getBonusBudget()) + "\n" +
-                                                    "Claims: " + target.getUsedClaims() + "\n" +
-                                                    "Claim Budget Available: " + target.getAvailableBudget()), false);
-                                    return 1;
-                                })))
-
-                // ===========================================================
-                // /f disband  —  destroy the player's own faction.
-                // Two-step: first call WARNS, a second call within 10s
-                // CONFIRMS. The "was warned" state lives in the manager's
-                // pendingDisband map (UUID -> warn timestamp).
-                // ===========================================================
-                .then(Commands.literal("disband")
-                        .executes(ctx -> {
-                            ServerPlayer player = ctx.getSource().getPlayerOrException();
-                            FactionManager manager = FactionSavedData.get(player.server).getManager();
-
-                            // GATE 1: must be in a faction.
-                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
-                            if (playerFaction == null) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("You are not in a faction!"));
-                                return 0;
-                            }
-                            // GATE 2: must be the OWNER (not just OFFICER+).
-                            if (!playerFaction.getOwner().equals(player.getUUID())) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("Only the owner of '" + playerFaction.getName() + "' can disband it!"));
-                                return 0;
-                            }
-
-                            long now = System.currentTimeMillis();
-                            Long warnedAt = manager.getPendingDisband().get(player.getUUID());
-
-                            if (warnedAt != null && now - warnedAt < 10_000) {
-                                // ---- CONFIRM branch (warned < 10s ago) ----
-                                // notify BEFORE disbandFaction — once the
-                                // faction is disbanded its member list is
-                                // gone, so notifyFaction would reach nobody.
-                                player.server.getPlayerList().broadcastSystemMessage(
-                                        Component.literal("[Shards Factions] Faction '" + playerFaction.getName() + "' has been disband!"), false);
-                                manager.notifyFaction(playerFaction,
-                                        Component.literal(player.getName().getString() + " has disbanded the faction!"),
-                                        player.server);
-
-                                manager.getPendingDisband().remove(player.getUUID());
-                                manager.disbandFaction(playerFaction);
-                                FactionSavedData.get(player.server).setDirty();
-                                ctx.getSource().sendSuccess(
-                                        () -> Component.literal("Faction Disbanded."), false);
-                                return 1;
-                            } else {
-                                // ---- WARN branch (no warning, or stale) ----
-                                // record the warn time; ask for a second call.
-                                manager.getPendingDisband().put(player.getUUID(), now);
-                                ctx.getSource().sendFailure(
-                                        Component.literal("This will disband your faction. Type /f disband again to confirm."));
-                                return 1;
-                            }
-                        }))
-
-                // ===========================================================
-                // /f leave  —  leave the player's faction.
-                // The OWNER cannot leave — they are redirected to /f disband.
-                // This is where removeMember's missing owner-guard is
-                // enforced: the command layer catches the owner first.
-                // ===========================================================
-                .then(Commands.literal("leave")
-                        .executes(ctx -> {
-                            ServerPlayer player = ctx.getSource().getPlayerOrException();
-                            FactionManager manager = FactionSavedData.get(player.server).getManager();
-
-                            // GATE 1: must be in a faction.
-                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
-                            if (playerFaction == null) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("You are not in a faction!"));
-                                return 0;
-                            }
-                            // GATE 2: the owner cannot simply leave.
-                            if (playerFaction.getOwner().equals(player.getUUID())) {
-                                ctx.getSource().sendFailure(
-                                        Component.literal("You are the owner of '" + playerFaction.getName()
-                                                + "'. To leave you must /f promote someone to leader or /f disband!"));
-                                return 0;
-                            }
-
-                            FactionSavedData.get(player.server).setDirty();
-                            ctx.getSource().sendSuccess(
-                                    () -> Component.literal("You left '" + playerFaction.getName() + "'."), false);
-                            // notify BEFORE removing keeps the leaver in the
-                            // loop's reach for this one message. (Either
-                            // order is fine; this includes the leaver.)
-                            playerFaction.removeMember(player.getUUID());
-                            manager.notifyFaction(playerFaction,
-                                    Component.literal(player.getName().getString() + " has left the faction."),
-                                    player.server);
-                            return 1;
-                        }))
-
-                // ===========================================================
-                // /f invite <player>  —  issue a pending invite.
-                // EntityArgument.player() gives real online-player tab
-                // completion and rejects unknown names before this body runs.
-                // ===========================================================
-                .then(Commands.literal("invite")
-                        .then(Commands.argument("player", EntityArgument.player())
-                                .executes(ctx -> {
-                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
-                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
-
-                                    // GATE 1: must be in a faction.
-                                    Faction playerFaction = manager.getFactionByMember(player.getUUID());
-                                    if (playerFaction == null) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("You are not in a faction!"));
-                                        return 0;
-                                    }
-                                    // GATE 2: must be OFFICER+.
-                                    if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("You must be an officer or owner to invite players."));
-                                        return 0;
-                                    }
-
-                                    // `target` here is the invited PLAYER.
-                                    // No null-check needed — EntityArgument
-                                    // guaranteed an online player exists.
-                                    ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
-
-                                    // ACT: record the invite (ephemeral — no
-                                    // setDirty; the invites map is not saved).
-                                    playerFaction.addInvite(target.getUUID());
-
-                                    ctx.getSource().sendSuccess(
-                                            () -> Component.literal("Invited " + target.getName().getString()
-                                                    + " to '" + playerFaction.getName() + "'."), false);
-
-                                    // audience 1: the faction.
-                                    manager.notifyFaction(playerFaction,
-                                            Component.literal(target.getName().getString()
-                                                    + " was invited to the faction by " + player.getName().getString() + "."),
-                                            player.server);
-                                    // audience 2: the invited player directly
-                                    // (they are NOT a member yet, so they are
-                                    // not in notifyFaction's loop — they need
-                                    // their own message, with how to accept).
-                                    target.sendSystemMessage(
-                                            Component.literal("You've been invited to '" + playerFaction.getName()
-                                                    + "'. Type /f join " + playerFaction.getName() + " to accept."));
-                                    return 1;
-                                })))
-
-                // ===========================================================
-                // /f join <faction>  —  accept an invite and join by name.
-                // ===========================================================
+                // /f join <faction> — accept an invite and join by name.
                 .then(Commands.literal("join")
                         .then(Commands.argument("faction", StringArgumentType.word())
                                 .executes(ctx -> {
@@ -339,37 +96,27 @@ public class FactionCommand {
                                     String factionName = StringArgumentType.getString(ctx, "faction");
                                     FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-                                    // GATE 1: cannot join while already in one.
                                     if (manager.getFactionByMember(player.getUUID()) != null) {
                                         ctx.getSource().sendFailure(
                                                 Component.literal("You are already in a faction!"));
                                         return 0;
                                     }
 
-                                    // `target` is the Faction being joined.
                                     Faction target = manager.getFactionByName(factionName);
-                                    // GATE 2: that faction must exist. Use the
-                                    // `target` already fetched — no second
-                                    // getFactionByName call.
                                     if (target == null) {
                                         ctx.getSource().sendFailure(
                                                 Component.literal(factionName + " faction does not exist!"));
                                         return 0;
                                     }
-                                    // GATE 3: must hold a valid (un-expired)
-                                    // invite. hasValidInvite does the 300s
-                                    // expiry check internally.
+                                    // hasValidInvite does the 300s expiry check internally.
                                     if (!target.hasValidInvite(player.getUUID())) {
                                         ctx.getSource().sendFailure(
                                                 Component.literal("You were either not invited to " + factionName + " or your invite has expired!"));
                                         return 0;
                                     }
 
-                                    // ACT: join, then consume the invite so
-                                    // it cannot be reused.
                                     target.addMember(player.getUUID());
-                                    target.removeInvite(player.getUUID());
-                                    // membership is persisted -> setDirty.
+                                    target.removeInvite(player.getUUID()); // single-use
                                     FactionSavedData.get(player.server).setDirty();
 
                                     manager.notifyFaction(target,
@@ -380,24 +127,249 @@ public class FactionCommand {
                                     return 1;
                                 })))
 
-                // ===========================================================
-                // /f unclaim  —  release the chunk the player is standing in.
-                // Also the escape hatch out of the over-budget-frozen state.
-                // ===========================================================
-                .then(Commands.literal("unclaim")
+                // /f leave — leave your faction. The owner is redirected to
+                // /f disband (this is where removeMember's missing owner-guard
+                // is enforced — the command layer catches the owner first).
+                .then(Commands.literal("leave")
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
                             FactionManager manager = FactionSavedData.get(player.server).getManager();
-                            ChunkPos chunk = player.chunkPosition();
 
-                            // GATE 1: must be in a faction.
                             Faction playerFaction = manager.getFactionByMember(player.getUUID());
                             if (playerFaction == null) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("You are not in a faction!"));
                                 return 0;
                             }
-                            // GATE 2: must be OFFICER+.
+                            if (playerFaction.getOwner().equals(player.getUUID())) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are the owner of '" + playerFaction.getName()
+                                                + "'. To leave you must /f promote someone to leader or /f dis nd!"));
+                                return 0;
+                            }
+
+                            FactionSavedData.get(player.server).setDirty();
+                            ctx.getSource().sendSuccess(
+                                    () -> Component.literal("You left '" + playerFaction.getName() + "'."), false);
+                            // notify before removing keeps the leaver in reach for this message.
+                            playerFaction.removeMember(player.getUUID());
+                            manager.notifyFaction(playerFaction,
+                                    Component.literal(player.getName().getString() + " has left the faction."),
+                                    player.server);
+                            return 1;
+                        }))
+
+                // /f invite <player> — issue a pending invite (OFFICER+).
+                .then(Commands.literal("invite")
+                        .then(Commands.argument("player", EntityArgument.player())
+                                .executes(ctx -> {
+                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
+                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                                    Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                                    if (playerFaction == null) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You are not in a faction!"));
+                                        return 0;
+                                    }
+                                    if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You must be an officer or owner to invite players."));
+                                        return 0;
+                                    }
+
+                                    ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+                                    playerFaction.addInvite(target.getUUID()); // ephemeral — no setDirty
+
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal("Invited " + target.getName().getString()
+                                                    + " to '" + playerFaction.getName() + "'."), false);
+                                    manager.notifyFaction(playerFaction,
+                                            Component.literal(target.getName().getString()
+                                                    + " was invited to the faction by " + player.getName().getString() + "."),
+                                            player.server);
+                                    // the invited player isn't a member yet, so they're not in
+                                    // notifyFaction's loop — message them directly with how to accept.
+                                    target.sendSystemMessage(
+                                            Component.literal("You've been invited to '" + playerFaction.getName()
+                                                    + "'. Type /f join " + playerFaction.getName() + " to accept."));
+                                    return 1;
+                                })))
+
+                // /f kick <player> — remove a member. The kicker must STRICTLY
+                // out-rank the target (FactionRole ordinals: OWNER 0, OFFICER 1,
+                // MEMBER 2 — lower = higher rank). Protects the owner for free.
+                .then(Commands.literal("kick")
+                        .then(Commands.argument("player", EntityArgument.player())
+                                .executes(ctx -> {
+                                    ServerPlayer kicker = ctx.getSource().getPlayerOrException();
+                                    ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
+                                    FactionManager manager = FactionSavedData.get(kicker.server).getManager();
+
+                                    Faction playerFaction = manager.getFactionByMember(kicker.getUUID());
+                                    if (playerFaction == null) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You are not in a faction!"));
+                                        return 0;
+                                    }
+                                    if (!playerFaction.isAtLeastOfficer(kicker.getUUID())) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You must be an Officer or Owner to kick players."));
+                                        return 0;
+                                    }
+                                    // must run before getRole/ordinal — getRole on a non-member is null.
+                                    if (!playerFaction.isMember(target.getUUID())) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal(target.getName().getString()
+                                                        + " is not in your faction."));
+                                        return 0;
+                                    }
+                                    FactionRole kickerRole = playerFaction.getRole(kicker.getUUID());
+                                    FactionRole targetRole = playerFaction.getRole(target.getUUID());
+                                    if (!(kickerRole.ordinal() < targetRole.ordinal())) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You can't kick someone of equal or higher rank."));
+                                        return 0;
+                                    }
+
+                                    playerFaction.removeMember(target.getUUID());
+                                    FactionSavedData.get(kicker.server).setDirty();
+
+                                    // target is no longer a member, so notifyFaction won't reach them...
+                                    manager.notifyFaction(playerFaction,
+                                            Component.literal(kicker.getName().getString() + " has kicked "
+                                                    + target.getName().getString() + " from the faction!"),
+                                            kicker.server);
+                                    // ...message them directly.
+                                    target.sendSystemMessage(
+                                            Component.literal("You were kicked from '"
+                                                    + playerFaction.getName() + "'."));
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal("Kicked " + target.getName().getString()
+                                                    + " from '" + playerFaction.getName() + "'."), false);
+                                    return 1;
+                                })))
+
+                // /f disband — destroy your own faction (OWNER only). Two-step:
+                // first call warns, a second call within 10s confirms. The
+                // "was warned" state lives in the manager's pendingDisband map.
+                .then(Commands.literal("disband")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                            if (playerFaction == null) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are not in a faction!"));
+                                return 0;
+                            }
+                            if (!playerFaction.getOwner().equals(player.getUUID())) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("Only the owner of '" + playerFaction.getName() + "' can disband it!"));
+                                return 0;
+                            }
+
+                            long now = System.currentTimeMillis();
+                            Long warnedAt = manager.getPendingDisband().get(player.getUUID());
+
+                            if (warnedAt != null && now - warnedAt < 10_000) {
+                                // CONFIRM — notify BEFORE disbandFaction, or the member
+                                // list is gone and notifyFaction reaches nobody.
+                                player.server.getPlayerList().broadcastSystemMessage(
+                                        Component.literal("[Shards Factions] Faction '" + playerFaction.getName() + "' has been disband!"), false);
+                                manager.notifyFaction(playerFaction,
+                                        Component.literal(player.getName().getString() + " has disbanded the faction!"),
+                                        player.server);
+                                manager.getPendingDisband().remove(player.getUUID());
+                                BlockPos obeliskPos = playerFaction.getObeliskPos();
+                                if (obeliskPos != null) {
+                                    player.serverLevel().setBlockAndUpdate(obeliskPos, Blocks.AIR.defaultBlockState());
+                                }
+                                manager.disbandFaction(playerFaction);
+                                FactionSavedData.get(player.server).setDirty();
+                                ctx.getSource().sendSuccess(
+                                        () -> Component.literal("Faction Disbanded."), false);
+                                return 1;
+                            } else {
+                                // WARN — record the time, ask for a second call.
+                                manager.getPendingDisband().put(player.getUUID(), now);
+                                ctx.getSource().sendFailure(
+                                        Component.literal("This will disband your faction. Type /f disband again to confirm."));
+                                return 1;
+                            }
+                        }))
+
+                // ===================== TERRITORY =====================
+
+                // /f claim — claim the chunk you're standing in (OFFICER+).
+                // Also the overclaim path (handled inside claimChunk).
+                .then(Commands.literal("claim")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+                            ChunkPos chunk = player.chunkPosition();
+
+                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                            if (playerFaction == null) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are not in a faction!"));
+                                return 0;
+                            }
+                            if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You must be an Officer or Owner to do this!"));
+                                return 0;
+                            }
+
+                            // capture the former owner BEFORE the claim call — on an
+                            // overclaim the transfer reassigns the claim's owner.
+                            Claim before = manager.getClaim(chunk);
+                            Faction formerOwner = before != null ? manager.getFaction(before.getClaimedBy()) : null;
+                            String formerName = formerOwner != null ? formerOwner.getName() : "";
+                            ClaimResult result = manager.claimChunk(chunk, playerFaction);
+
+                            if (result == ClaimResult.ALREADY_CLAIMED) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("This chunk is already claimed."));
+                                return 0;
+                            }
+                            if (result == ClaimResult.NO_BUDGET) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("Your faction has no power left to claim land!"));
+                                return 0;
+                            }
+                            if (result == ClaimResult.OVERCLAIM_SUCCESS) {
+                                manager.notifyFaction(playerFaction,
+                                        Component.literal(player.getName().getString()
+                                                + " has overclaimed a chunk for the faction from " + formerName), player.server);
+                                FactionSavedData.get(player.server).setDirty();
+                                return 1;
+                            }
+                            // normal claim success
+                            FactionSavedData.get(player.server).setDirty();
+                            manager.notifyFaction(playerFaction,
+                                    Component.literal(player.getName().getString() + " has claimed a chunk for the faction!"),
+                                    player.server);
+                            ctx.getSource().sendSuccess(
+                                    () -> Component.literal("Chunk claimed for '" + playerFaction.getName() + "'!"), false);
+                            return 1;
+                        }))
+
+                // /f unclaim — release the chunk you're standing in (OFFICER+).
+                // Also the escape hatch out of the over-budget-frozen state.
+                .then(Commands.literal("unclaim")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+                            ChunkPos chunk = player.chunkPosition();
+
+                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                            if (playerFaction == null) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are not in a faction!"));
+                                return 0;
+                            }
                             if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("You must be an Officer or Owner to do this!"));
@@ -405,22 +377,18 @@ public class FactionCommand {
                             }
 
                             Claim claim = manager.getClaim(chunk);
-                            // GATE 3a: this chunk must actually be claimed.
                             if (claim == null) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("This chunk is not claimed!"));
                                 return 0;
                             }
-                            // GATE 3b: and it must be THIS faction's claim.
-                            // getClaimedBy() is a faction id (UUID) — compare
-                            // with .equals, not == (two UUID objects).
+                            // getClaimedBy() is a faction id — compare with .equals.
                             if (!claim.getClaimedBy().equals(playerFaction.getId())) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("This chunk is owned by another faction!"));
                                 return 0;
                             }
 
-                            // ACT: drop the claim, keep usedClaims honest.
                             manager.removeClaim(chunk);
                             playerFaction.decrementUsedClaims();
                             FactionSavedData.get(player.server).setDirty();
@@ -433,158 +401,49 @@ public class FactionCommand {
                             return 1;
                         }))
 
-                // ===========================================================
-                // /f kick <player>  —  remove a member from your faction.
-                // Rank rule: the kicker must out-rank the target STRICTLY.
-                // An OFFICER cannot kick another OFFICER or the OWNER.
-                // ===========================================================
-                .then(Commands.literal("kick")
-                        .then(Commands.argument("player", EntityArgument.player())
-                                .executes(ctx -> {
-                                    // `kicker` runs the command; `target` is
-                                    // the player being kicked.
-                                    ServerPlayer kicker = ctx.getSource().getPlayerOrException();
-                                    ServerPlayer target = EntityArgument.getPlayer(ctx, "player");
-                                    FactionManager manager = FactionSavedData.get(kicker.server).getManager();
-
-                                    // GATE 1: kicker must be in a faction.
-                                    Faction playerFaction = manager.getFactionByMember(kicker.getUUID());
-                                    if (playerFaction == null) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("You are not in a faction!"));
-                                        return 0;
-                                    }
-                                    // GATE 2: kicker must be OFFICER+ to kick
-                                    // at all (the shared rank helper).
-                                    if (!playerFaction.isAtLeastOfficer(kicker.getUUID())) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("You must be an Officer or Owner to kick players."));
-                                        return 0;
-                                    }
-                                    // GATE 3: target must be in this faction.
-                                    // Must run BEFORE GATE 4 — getRole on a
-                                    // non-member returns null, and null has
-                                    // no .ordinal().
-                                    if (!playerFaction.isMember(target.getUUID())) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal(target.getName().getString()
-                                                        + " is not in your faction."));
-                                        return 0;
-                                    }
-                                    // GATE 4: kicker must STRICTLY out-rank
-                                    // the target. FactionRole is declared
-                                    // OWNER, OFFICER, MEMBER, so ordinal() is
-                                    // 0,1,2 — LOWER ordinal = HIGHER rank.
-                                    // "out-ranks" is kicker.ordinal < target.
-                                    // This also protects the OWNER for free:
-                                    // owner is ordinal 0, nothing is below 0.
-                                    FactionRole kickerRole = playerFaction.getRole(kicker.getUUID());
-                                    FactionRole targetRole = playerFaction.getRole(target.getUUID());
-                                    if (!(kickerRole.ordinal() < targetRole.ordinal())) {
-                                        ctx.getSource().sendFailure(
-                                                Component.literal("You can't kick someone of equal or higher rank."));
-                                        return 0;
-                                    }
-
-                                    // ACT: remove the target.
-                                    playerFaction.removeMember(target.getUUID());
-                                    FactionSavedData.get(kicker.server).setDirty();
-
-                                    // notify the faction (the kicked player is
-                                    // NO LONGER a member, so notifyFaction's
-                                    // loop will not reach them)...
-                                    manager.notifyFaction(playerFaction,
-                                            Component.literal(kicker.getName().getString() + " has kicked "
-                                                    + target.getName().getString() + " from the faction!"),
-                                            kicker.server);
-                                    // ...so the kicked player gets told
-                                    // directly. Without this they would never
-                                    // learn they were kicked.
-                                    target.sendSystemMessage(
-                                            Component.literal("You were kicked from '"
-                                                    + playerFaction.getName() + "'."));
-
-                                    ctx.getSource().sendSuccess(
-                                            () -> Component.literal("Kicked " + target.getName().getString()
-                                                    + " from '" + playerFaction.getName() + "'."), false);
-                                    return 1;
-                                })))
-                .then(Commands.literal("promote")
-                        .then(Commands.argument("role", StringArgumentType.word())
-                                .then(Commands.argument("player", EntityArgument.player())
-                                        .executes(ctx -> handleRoleChange(ctx, true)))))
-
-                .then(Commands.literal("demote")
-                        .then(Commands.argument("role", StringArgumentType.word())
-                                .then(Commands.argument("player", EntityArgument.player())
-                                        .executes(ctx -> handleRoleChange(ctx, false)))))
-                // ===========================================================
-                // /f autoclaim  —  toggle autoclaim mode for the player.
-                // While ON, walking into an unclaimed chunk claims it. The
-                // actual claiming happens in ChunkBorderTracker.onChunkCrossed;
-                // this command only flips the per-player flag.
-                // ===========================================================
+                // /f autoclaim — toggle autoclaim (OFFICER+). The claiming itself
+                // happens in ChunkBorderTracker.onChunkCrossed; this only flips
+                // the per-player flag. Ephemeral — no setDirty.
                 .then(Commands.literal("autoclaim")
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
                             FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-                            // GATE 1: must be in a faction.
                             Faction playerFaction = manager.getFactionByMember(player.getUUID());
                             if (playerFaction == null) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("You are not in a faction!"));
                                 return 0;
                             }
-                            // GATE 2: must be OFFICER+ (Addendum 2 §18).
                             if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
                                 ctx.getSource().sendFailure(
                                         Component.literal("You must be an Officer or Owner to do this!"));
                                 return 0;
                             }
 
-                            // ACT: flip the flag. toggleAutoclaim returns the NEW state.
                             boolean nowOn = ShardsFactions.chunkBorderTracker
                                     .toggleAutoclaim(player.getUUID());
-
-                            // ephemeral state — no setDirty.
-                            if (nowOn) {
-                                ctx.getSource().sendSuccess(
-                                        () -> Component.literal("Autoclaim ON — walk into chunks to claim them."), false);
-                            } else {
-                                ctx.getSource().sendSuccess(
-                                        () -> Component.literal("Autoclaim OFF."), false);
-                            }
+                            ctx.getSource().sendSuccess(
+                                    () -> Component.literal(nowOn
+                                            ? "Autoclaim ON — walk into chunks to claim them."
+                                            : "Autoclaim OFF."), false);
                             return 1;
                         }))
 
-                // ===========================================================
-                // /f map  —  a chat-grid map of nearby claims (Addendum 2
-                // §19.1). Server-side ONLY: no client mod, no networking —
-                // the server knows every claim and just builds a coloured
-                // text grid and sends it as chat.
-                //
-                // Read-only, like /f info: no setDirty, no notifyFaction.
-                // Gate: must be in a faction (the grid highlights YOUR land,
-                // so "not in a faction" has nothing to centre on).
-                //
-                // GRID: 9x9 chunks centred on the player's chunk. Minecraft
-                // axes: +Z is SOUTH, -Z is NORTH. To draw north-up (top row
-                // = north), dz runs -4..+4 top-to-bottom; dx runs -4..+4
-                // left-to-right (west to east).
-                //
-                // CELL SYMBOLS:
-                //   +  the player's own chunk (grid centre)      — yellow
-                //   #  a chunk owned by the player's faction     — faction colour
-                //   #  a chunk owned by another faction          — that faction's colour
-                //   .  wilderness (unclaimed)                    — dark gray
-                // ===========================================================
+                // /f map — chat-grid map of nearby claims (server-side only).
+                // 9x9 chunks centred on the player. +Z is south, -Z is north,
+                // so dz runs -4..+4 top-to-bottom to draw north-up. Read-only.
+                // Cells: + own chunk (yellow), # claimed (faction colour),
+                // . wilderness (dark gray). Node-gated (FactionPermissions.MAP).
                 .then(Commands.literal("map")
+                        .requires(src -> {
+                            ServerPlayer p = src.getPlayer();
+                            return p != null && PermissionAPI.getPermission(p, FactionPermissions.MAP);
+                        })
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
                             FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-                            // GATE: must be in a faction.
                             Faction playerFaction = manager.getFactionByMember(player.getUUID());
                             if (playerFaction == null) {
                                 ctx.getSource().sendFailure(
@@ -592,127 +451,243 @@ public class FactionCommand {
                                 return 0;
                             }
 
-                            // The chunk the player is standing in — the grid
-                            // centre. px/pz are chunk coordinates.
                             ChunkPos centre = player.chunkPosition();
                             int px = centre.x;
                             int pz = centre.z;
 
-                            // Build the map as ONE Component, line by line.
-                            // MutableComponent: a Component you can .append()
-                            // children to. Component.literal(...) already
-                            // returns one — typing the variable as
-                            // MutableComponent lets us call .append without
-                            // casting on every line.
-                            // Start with a header line; each grid row is
-                            // appended as a child, prefixed with "\n".
                             MutableComponent map = Component.literal("Faction Map — centred on you")
                                     .withStyle(ChatFormatting.GOLD);
 
-                            // OUTER loop: rows, north (-4) to south (+4).
                             for (int dz = -4; dz <= 4; dz++) {
-                                // Each row starts on a new line.
                                 MutableComponent row = Component.literal("\n");
-
-                                // INNER loop: cells in the row, west to east.
                                 for (int dx = -4; dx <= 4; dx++) {
                                     ChunkPos cell = new ChunkPos(px + dx, pz + dz);
 
                                     String symbol;
                                     ChatFormatting colour;
-
-                                    // CASE 1: the centre cell is the player.
-                                    // dx==0 && dz==0 is the player's own chunk.
                                     if (dx == 0 && dz == 0) {
                                         symbol = "+";
                                         colour = ChatFormatting.YELLOW;
                                     } else {
-                                        // Otherwise classify by who owns it.
                                         Claim claim = manager.getClaim(cell);
                                         if (claim == null) {
-                                            // CASE 2: wilderness.
                                             symbol = ".";
                                             colour = ChatFormatting.DARK_GRAY;
                                         } else {
-                                            // CASE 3/4: claimed — resolve the
-                                            // owning faction to colour the cell.
-                                            Faction owner =
-                                                    manager.getFaction(claim.getClaimedBy());
+                                            Faction owner = manager.getFaction(claim.getClaimedBy());
                                             symbol = "#";
-                                            // Defensive: a claim should always
-                                            // resolve, but don't NPE if it
-                                            // somehow doesn't — fall back to
-                                            // wilderness styling.
-                                            colour = (owner != null)
-                                                    ? owner.getColor()
-                                                    : ChatFormatting.DARK_GRAY;
+                                            // defensive: fall back to wilderness styling if unresolved.
+                                            colour = (owner != null) ? owner.getColor() : ChatFormatting.DARK_GRAY;
                                         }
                                     }
-
-                                    // Append the cell (symbol + a space, so
-                                    // the grid is not cramped) in its colour.
-                                    row.append(Component.literal(symbol + " ")
-                                            .withStyle(colour));
+                                    row.append(Component.literal(symbol + " ").withStyle(colour));
                                 }
-
-                                // Append the finished row to the map.
                                 map.append(row);
                             }
 
-                            // Pure read — sendSuccess only, no setDirty/notify.
-                            // 'final' copy: the lambda below captures it, and a
-                            // lambda may only capture effectively-final vars.
+                            // lambda captures must be effectively final.
                             final MutableComponent finalMap = map;
                             ctx.getSource().sendSuccess(() -> finalMap, false);
                             return 1;
                         }))
+
+                // ===================== ROLES =====================
+
+                // /f promote <role> <name> / /f demote <role> <name> — owner-only
+                // role management. Shared body (handleRoleChange); isPromote
+                // selects the direction guard. /f promote owner <name> transfers.
+                .then(Commands.literal("promote")
+                        .then(Commands.argument("role", StringArgumentType.word())
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .executes(ctx -> handleRoleChange(ctx, true)))))
+                .then(Commands.literal("demote")
+                        .then(Commands.argument("role", StringArgumentType.word())
+                                .then(Commands.argument("player", EntityArgument.player())
+                                        .executes(ctx -> handleRoleChange(ctx, false)))))
+
+                // ===================== SPECIAL =====================
+
+                // /f obelisk give — owner-only; hands over the Obelisk item.
+                // Continuous cooldown (§39.3), config-driven, first give free.
+                .then(Commands.literal("obelisk")
+                        .then(Commands.literal("give")
+                                .executes(ctx -> {
+                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
+                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                                    Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                                    if (playerFaction == null) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("You are not in a faction!"));
+                                        return 0;
+                                    }
+                                    if (!playerFaction.getOwner().equals(player.getUUID())) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("Only the owner of '"
+                                                        + playerFaction.getName()
+                                                        + "' can request an obelisk!"));
+                                        return 0;
+                                    }
+
+                                    // cooldown (§39.3): continuous; first give free (last == 0).
+                                    long now = System.currentTimeMillis();
+                                    long last = playerFaction.getLastObeliskGive();
+                                    long cooldown = ShardsFactionsConfig.OBELISK_GIVE_COOLDOWN_MS.get();
+                                    long elapsed = now - last;
+                                    if (last > 0 && elapsed < cooldown) {
+                                        long remainingMin = (cooldown - elapsed) / 60_000L;
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("Your faction must wait "
+                                                        + remainingMin
+                                                        + " more minute(s) before requesting another obelisk."));
+                                        return 0;
+                                    }
+
+                                    ItemStack obelisk = new ItemStack(ObeliskRegistration.FACTION_OBELISK_ITEM.get());
+                                    if (!player.getInventory().add(obelisk)) {
+                                        player.drop(obelisk, false); // inventory full — drop so it's never lost
+                                    }
+
+                                    playerFaction.setLastObeliskGive(now);
+                                    FactionSavedData.get(player.server).setDirty();
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal("Obelisk granted to '"
+                                                    + playerFaction.getName() + "'."), false);
+                                    return 1;
+                                })))
+
+                // /f bypass — toggle admin protection-bypass for this player.
+                // Node-gated (FactionPermissions.BYPASS, explicit grant only).
+                // Ephemeral — no setDirty.
                 .then(Commands.literal("bypass")
+                        .requires(src -> {
+                            ServerPlayer p = src.getPlayer();
+                            return p != null && PermissionAPI.getPermission(p, FactionPermissions.BYPASS);
+                        })
                         .executes(ctx -> {
                             ServerPlayer player = ctx.getSource().getPlayerOrException();
-                            // FactionManager manager = FactionSavedData.get(player.server).getManager();
-                                FactionManager manager = FactionSavedData.get(player.server).getManager();
-                            // GATE: ??? (see "Gate question" below)
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-                            // ACT: flip the bypass flag for this player.
-                            // boolean nowOn = ???.toggleBypass(player.getUUID());
-                                boolean nowOn = manager.toggleBypass(player.getUUID());
-                            // Ephemeral state — no setDirty
-                            // RESPOND: tell the player the new state.
-                                if (!nowOn) {
-                                    ctx.getSource().sendSuccess(
-                                            () -> Component.literal("Bypass is OFF - You no longer bypass Faction Protections!"), false);
-
-                                } else {
-                                    ctx.getSource().sendSuccess(
-                                            () -> Component.literal("Bypass is ON - You are bypassing Faction Protection!"), false);
-                                }
-                            // if (nowOn) {
-                            //     ctx.getSource().sendSuccess(
-                            //             () -> Component.literal("Bypass ON — protection rules are skipped for you."), false);
-                            // } else {
-                            //     ctx.getSource().sendSuccess(
-                            //             () -> Component.literal("Bypass OFF."), false);
-                            // }
+                            boolean nowOn = manager.toggleBypass(player.getUUID());
+                            ctx.getSource().sendSuccess(
+                                    () -> Component.literal(nowOn
+                                            ? "Bypass is ON - You are bypassing Faction Protection!"
+                                            : "Bypass is OFF - You no longer bypass Faction Protections!"), false);
                             return 1;
                         }))
+
+                // ===================== ADMIN (OP level 2) =====================
+                // The .requires on the `admin` literal gates ALL its children.
+
+                .then(Commands.literal("admin")
+                        .requires(src -> src.hasPermission(2))
+
+                        // /f admin createsystem <SAFEZONE|WARZONE> <name> —
+                        // create a playerless system faction owned by the
+                        // server sentinel. PLAYER is rejected (use /f new).
+                        .then(Commands.literal("createsystem")
+                                .then(Commands.argument("type", StringArgumentType.word())
+                                        .then(Commands.argument("name", StringArgumentType.word())
+                                                .executes(ctx -> {
+                                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
+                                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                                                    String typeArg = StringArgumentType.getString(ctx, "type").toUpperCase();
+                                                    String name = StringArgumentType.getString(ctx, "name");
+
+                                                    FactionType type;
+                                                    if (typeArg.equals("SAFEZONE")) {
+                                                        type = FactionType.SAFEZONE;
+                                                    } else if (typeArg.equals("WARZONE")) {
+                                                        type = FactionType.WARZONE;
+                                                    } else {
+                                                        ctx.getSource().sendFailure(
+                                                                Component.literal("Type must be SAFEZONE or WARZONE."));
+                                                        return 0;
+                                                    }
+
+                                                    CreateResult result = manager.createFaction(
+                                                            name, FactionManager.SERVER_OWNER, type);
+                                                    if (result == CreateResult.NAME_TAKEN) {
+                                                        ctx.getSource().sendFailure(
+                                                                Component.literal("A faction named '" + name + "' already exists!"));
+                                                        return 0;
+                                                    }
+
+                                                    FactionSavedData.get(player.server).setDirty();
+                                                    ctx.getSource().sendSuccess(
+                                                            () -> Component.literal("Created " + type.name()
+                                                                    + " faction '" + name + "'. Use /f admin join "
+                                                                    + name + " then /f claim to paint its chunks."), false);
+                                                    return 1;
+                                                }))))
+
+                        // /f admin join <faction> — join any faction with no
+                        // invite, as OFFICER (so /f claim works for setup).
+                        // The system-faction setup path (§13.4 OP join).
+                        .then(Commands.literal("join")
+                                .then(Commands.argument("faction", StringArgumentType.word())
+                                        .executes(ctx -> {
+                                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                                            String factionName = StringArgumentType.getString(ctx, "faction");
+                                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                                            if (manager.getFactionByMember(player.getUUID()) != null) {
+                                                ctx.getSource().sendFailure(
+                                                        Component.literal("You are already in a faction!"));
+                                                return 0;
+                                            }
+                                            Faction target = manager.getFactionByName(factionName);
+                                            if (target == null) {
+                                                ctx.getSource().sendFailure(
+                                                        Component.literal(factionName + " faction does not exist!"));
+                                                return 0;
+                                            }
+
+                                            target.addMemberWithRole(player.getUUID(), FactionRole.OFFICER);
+                                            FactionSavedData.get(player.server).setDirty();
+                                            ctx.getSource().sendSuccess(
+                                                    () -> Component.literal("Admin-joined '" + factionName + "' as officer."), false);
+                                            return 1;
+                                        }))))
+
+                // /f info <name> — read-only readout of a faction.
+                .then(Commands.literal("info")
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .executes(ctx -> {
+                                    ServerPlayer player = ctx.getSource().getPlayerOrException();
+                                    String name = StringArgumentType.getString(ctx, "name");
+                                    FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                                    Faction target = manager.getFactionByName(name);
+                                    if (target == null) {
+                                        ctx.getSource().sendFailure(
+                                                Component.literal("No faction named '" + name + "' exists!"));
+                                        return 0;
+                                    }
+
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal(target.getName() + " Owned by " + target.getOwner() + "\n" +
+                                                    "Member Count: " + target.getMemberCount() + "\n" +
+                                                    "Power: " + target.getUsedClaims() + " / " + (target.getBaseBudget() + target.getBonusBudget()) + "\n" +
+                                                    "Claims: " + target.getUsedClaims() + "\n" +
+                                                    "Claim Budget Available: " + target.getAvailableBudget()), false);
+                                    return 1;
+                                })))
                 ;
 
-        // Register the tree ONCE and capture the node it returns. The two
-        // aliases redirect to that same node — build the tree once, point
-        // three names at it.
+        // Register the tree once; point both other aliases at the same node.
         LiteralCommandNode<CommandSourceStack> built = dispatcher.register(faction);
         dispatcher.register(Commands.literal("factions").redirect(built));
         dispatcher.register(Commands.literal("f").redirect(built));
     }
+
     // ===========================================================================
-// Shared body for /f promote and /f demote (Addendum 1 §16.4).
-// Both verbs do nearly the same thing — set a member's role — so the logic
-// lives here once. `isPromote` is the ONLY difference: it picks which
-// direction-guard rejection applies.
-//
-// FactionRole is declared OWNER, OFFICER, MEMBER -> ordinals 0,1,2.
-// LOWER ordinal = HIGHER rank. (Same convention /f kick relies on.)
-// ===========================================================================
+    // Shared body for /f promote and /f demote (Addendum 1 §16.4).
+    // Both set a member's role; isPromote only selects which direction guard
+    // applies. FactionRole ordinals: OWNER 0, OFFICER 1, MEMBER 2 — lower
+    // ordinal = higher rank (same convention /f kick uses).
+    // ===========================================================================
     private static int handleRoleChange(CommandContext<CommandSourceStack> ctx,
                                         boolean isPromote) throws CommandSyntaxException {
         ServerPlayer player = ctx.getSource().getPlayerOrException();
@@ -720,33 +695,27 @@ public class FactionCommand {
         String roleArg = StringArgumentType.getString(ctx, "role");
         FactionManager manager = FactionSavedData.get(player.server).getManager();
 
-        // GATE 1: runner must be in a faction.
+        // GATE 1: runner in a faction.
         Faction playerFaction = manager.getFactionByMember(player.getUUID());
         if (playerFaction == null) {
             ctx.getSource().sendFailure(
                     Component.literal("You are not in a faction!"));
             return 0;
         }
-
-        // GATE 2: runner must be the OWNER. NOT isAtLeastOfficer — §16.4 says
-        // role management is owner-exclusive; an OFFICER cannot do this at all.
-        // YOU: getOwner().equals(player.getUUID()) check.
+        // GATE 2: owner-only — §16.4 makes role management owner-exclusive,
+        // so this is getOwner(), NOT isAtLeastOfficer.
         if (!playerFaction.getOwner().equals(player.getUUID())) {
             ctx.getSource().sendFailure(
                     Component.literal("Only the owner can manage roles."));
             return 0;
         }
-        // GATE 3: target must be a member of this faction.
-        // Must run before any getRole/ordinal on the target.
-        // YOU: isMember check.
+        // GATE 3: target must be a member (before any getRole/ordinal on it).
         if (!playerFaction.isMember(target.getUUID())) {
             ctx.getSource().sendFailure(
                     Component.literal(target.getName().getString() + " is not in your faction."));
             return 0;
         }
-        // GATE 4: parse the role argument safely. FactionRole.valueOf THROWS
-        // on a bad string ("/f promote captain Bob") — that throw must become
-        // a clean failure, not a crash. Parse inside try/catch:
+        // GATE 4: parse the role safely — valueOf throws on a bad string.
         FactionRole newRole;
         try {
             newRole = FactionRole.valueOf(roleArg.toUpperCase());
@@ -755,19 +724,15 @@ public class FactionCommand {
                     Component.literal("'" + roleArg + "' is not a valid role. Use OWNER, OFFICER or MEMBER."));
             return 0;
         }
-
-        // GATE 5: cannot target the current owner directly. The ONLY way out
-        // of OWNER is the transfer path below. So a command that names the
-        // owner as its target — except the transfer itself — is rejected.
-        // YOU: if target's UUID equals playerFaction.getOwner() -> fail.
-        //      (This blocks "/f demote MEMBER <owner>" and similar.)
+        // GATE 5: can't target the current owner directly — the only exit from
+        // OWNER is the transfer branch below (blocks "/f demote MEMBER <owner>").
         if (target.getUUID().equals(playerFaction.getOwner())) {
             ctx.getSource().sendFailure(
                     Component.literal("You can't change the owner's role directly. Use /f promote owner <player> to transfer."));
             return 0;
         }
-        // ---- TRANSFER branch: /f promote owner <name> ----
-        // Setting someone to OWNER is not a role-set, it's a transfer.
+
+        // TRANSFER: /f promote owner <name> — setting OWNER is a transfer, not a set.
         if (newRole == FactionRole.OWNER) {
             if (!isPromote) {
                 ctx.getSource().sendFailure(
@@ -784,15 +749,8 @@ public class FactionCommand {
             return 1;
         }
 
-        // ---- DIRECTION GUARD (§16.4) — plain role-set, non-OWNER target role ----
-        // The runner is the owner (GATE 2), so compare the NEW role against the
-        // target's CURRENT role to enforce verb-matches-effect.
+        // DIRECTION GUARD (§16.4): verb must match effect, vs the target's current rank.
         FactionRole currentRole = playerFaction.getRole(target.getUUID());
-        // isPromote  -> newRole must be a HIGHER rank than current -> LOWER ordinal.
-        // !isPromote -> newRole must be a LOWER rank  -> HIGHER ordinal.
-        // YOU: if isPromote and newRole.ordinal() >= currentRole.ordinal() -> fail
-        //      ("/f promote can only raise a rank").
-        // YOU: else if !isPromote and newRole.ordinal() <= currentRole.ordinal() -> fail.
         if (isPromote && newRole.ordinal() >= currentRole.ordinal()) {
             ctx.getSource().sendFailure(
                     Component.literal("/f promote can only raise a rank."));
@@ -803,16 +761,15 @@ public class FactionCommand {
                     Component.literal("/f demote can only lower a rank."));
             return 0;
         }
+
         // ACT: plain role-set.
         playerFaction.addMemberWithRole(target.getUUID(), newRole);
         FactionSavedData.get(player.server).setDirty();
-
         manager.notifyFaction(playerFaction,
                 Component.literal(target.getName().getString() + " is now " + newRole.name() + "."),
                 player.server);
         ctx.getSource().sendSuccess(
                 () -> Component.literal("Set " + target.getName().getString() + " to " + newRole.name() + "."), false);
         return 1;
-        // YOU: notifyFaction + sendSuccess. return 1;
     }
 }

@@ -81,7 +81,7 @@ public class Faction {
     // [§3] int — the "bonus" budget term (design §6). A spare capacity source
     // for future features (events, upgrades). 0 for now. NOT final — a future
     // feature could change it at runtime.
-    private final int bonusBudget;
+    private int bonusBudget;
 
     // [§3] int — how many chunks this faction currently owns. Goes UP on
     // claim, DOWN on unclaim or losing a chunk to an enemy overclaim. NOT
@@ -94,6 +94,8 @@ public class Faction {
     // expire. Addendum 2 §19.3: an invite is valid for 300s after issue.
     // NOT persisted — invites are ephemeral, like the disband-pending map.
     private final Map<UUID, Long> invites = new HashMap<>();
+
+
 
     // -----------------------------------------------------------------------
     // CONSTRUCTORS — [§6] run once, when a new Faction object is created.
@@ -272,6 +274,11 @@ public class Faction {
     public void setObeliskPos(BlockPos obeliskPos) {
         this.obeliskPos = obeliskPos;
     }
+    private long lastObeliskGive = 0L;
+    public long getLastObeliskGive() { return this.lastObeliskGive; }
+    public void setLastObeliskGive(long lastObeliskGive) {
+        this.lastObeliskGive = lastObeliskGive;
+    }
 
     /**
      * True if the player is OFFICER or OWNER — the "elevated rank" test.
@@ -417,5 +424,13 @@ public class Faction {
         this.members.put(this.owner, FactionRole.OFFICER);
         this.members.put(newOwner, FactionRole.OWNER);
         this.owner = newOwner;
+    }
+    public void decrementBonusBudget() {
+        if(getAvailableBudget() > 0) {
+            this.bonusBudget--;
+        }
+    }
+    public void incrementBonusBudget() {
+        this.bonusBudget++;
     }
 }

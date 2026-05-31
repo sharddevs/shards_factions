@@ -116,6 +116,7 @@ public class FactionObeliskBlock extends Block implements EntityBlock {
         for (Claim c: manager.getClaimsByFaction(faction.getId())) {
             c.setProtected(true);
         }
+    FactionSavedData.get(level.getServer()).setDirty();
     }
     public void onRemove(BlockState oldState, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
         if (oldState.is(newState.getBlock())) {
@@ -143,5 +144,6 @@ public class FactionObeliskBlock extends Block implements EntityBlock {
             }
         }
         super.onRemove(oldState, level, pos, newState, isMoving);
+        FactionSavedData.get(level.getServer()).setDirty();
     }
 }

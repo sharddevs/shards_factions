@@ -54,6 +54,9 @@ public class FactionSavedData extends SavedData {
             if (faction.getObeliskPos() != null) {
                 factionTag.putLong("obeliskPos", faction.getObeliskPos().asLong());
             }
+            if (faction.getLastObeliskGive() > 0) {
+                factionTag.putLong("lastObeliskGive", faction.getLastObeliskGive());
+            }
             factionTag.putInt("bonusBudget", faction.getBonusBudget());
             // factionTag.putInt("bonusBudget", ??? );
             factionTag.putInt("usedClaims", faction.getUsedClaims());
@@ -125,6 +128,9 @@ public class FactionSavedData extends SavedData {
             if (factionTag.contains("obeliskPos")) {
                 faction.setObeliskPos(
                         BlockPos.of(factionTag.getLong("obeliskPos")));
+            }
+            if (factionTag.contains("lastObeliskGive")) {
+                faction.setLastObeliskGive(factionTag.getLong("lastObeliskGive"));
             }
             ListTag memberList = factionTag.getList("members", Tag.TAG_COMPOUND);
             for (int j = 0; j < memberList.size(); j++) {

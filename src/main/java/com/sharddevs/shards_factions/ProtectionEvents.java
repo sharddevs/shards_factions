@@ -24,6 +24,13 @@ public class ProtectionEvents {
         FactionManager manager = FactionSavedData.get(level.getServer()).getManager();
         Claim claim = manager.getClaim(chunkPos);
         if (claim == null) return;
+        Faction owner = manager.getFaction(claim.getClaimedBy());
+        if (owner.getType() != FactionType.PLAYER) {
+            event.setCanceled(true);
+            event.getPlayer().sendSystemMessage(
+                    Component.literal("Cannot break! " + owner.getName() + " is a protected zone."));
+            return;
+        }
         if (!claim.isProtected()) return;
         if (event.getState().getBlock() instanceof FactionObeliskBlock) return;
         Player player = event.getPlayer();
@@ -45,6 +52,13 @@ public class ProtectionEvents {
         FactionManager manager = FactionSavedData.get(level.getServer()).getManager();
         Claim claim = manager.getClaim(chunkPos);
         if (claim == null) return;
+        Faction owner = manager.getFaction(claim.getClaimedBy());
+        if (owner.getType() != FactionType.PLAYER) {
+            place.setCanceled(true);
+            player.sendSystemMessage(
+                    Component.literal("Cannot place in " + owner.getName() + " — it is a protected zone."));
+            return;
+        }
         if (!claim.isProtected()) return;
         //Player playerManager = player.getPlayer();
         Faction placerFaction = manager.getFactionByMember(player.getUUID());

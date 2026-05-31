@@ -78,7 +78,7 @@ public class FactionManager {
         }
         return best;
     }
-
+    public static final UUID SERVER_OWNER = new UUID(0L, 0L);
     public CreateResult createFaction(String name, UUID owner, FactionType type) {
         for (Faction faction : this.factions.values()) {
             if (faction.getName().equalsIgnoreCase(name)) {
@@ -131,17 +131,64 @@ public class FactionManager {
     private final Map<UUID, Long> pendingDisband = new HashMap<>();
     public Map<UUID, Long> getPendingDisband() { return pendingDisband; }
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
-        if (getClaim(chunk) != null) {
+        // One lookup, stored once. Tells us claimed vs. unclaimed for the
+        // whole method — no need to call getClaim(chunk) again below.
+        Claim existing = getClaim(chunk);
+
+        if (existing != null) {
+            // ── chunk is already owned by someone ──
+
+            // Own-faction guard. If WE already own it there's nothing to claim
+            // or overclaim — bail before running overclaim logic against
+            // ourselves (which would compare the faction to itself).
+            if (existing.getClaimedBy().equals(faction.getId())) {
+                return ClaimResult.ALREADY_CLAIMED;
+            }
+
+            // The current owner B (victim). getFaction is the real lookup
+            // (not getFactionById). Owner id comes from getClaimedBy().
+            Faction victim = getFaction(existing.getClaimedBy());
+
+            // The four §17.2 overclaim conditions, all expressed as "allowed":
+            //   1. victim overextended      — B.usedClaims > B.budget   (cond 2)
+            //   2. attacker has headroom    — A.usedClaims < A.budget   (cond 1)
+            //   3. attacker budget positive — A.budget > 0              (cond 3)
+            //   4. NOT B's obelisk chunk while B's obelisk stands       (cond 4)
+            // "power" = getAvailableBudget() (Addendum 4 — unified value).
+            // Obelisk null-check is FIRST inside the !( ) so a null pos
+            // short-circuits before new ChunkPos(null) can NPE.
+
+            if (victim.getType() != FactionType.PLAYER) {
+                return ClaimResult.ALREADY_CLAIMED;
+            }
+            if (victim.getUsedClaims() > victim.getBaseBudget() + victim.getBonusBudget()
+                    && faction.getUsedClaims() < faction.getBaseBudget() + faction.getBonusBudget()
+                    && faction.getBaseBudget() + faction.getBonusBudget() > 0
+                    && !(victim.getObeliskPos() != null
+                    && chunk.equals(new ChunkPos(victim.getObeliskPos())))) {
+
+                // ── transfer (§17.4): two-sided, but the Claim object already
+                // lives in the manager's claims map keyed by this chunk, so we
+                // just flip its owner in place — no remove/re-add needed. ──
+                victim.decrementUsedClaims();          // B loses a claim
+                existing.setClaimedBy(faction.getId()); // chunk now owned by A
+                existing.setProtected(faction.getObeliskPos() != null);
+                faction.incrementUsedClaims();          // A gains a claim
+                return ClaimResult.OVERCLAIM_SUCCESS;
+            }
+
+            // Conditions failed — overclaim not allowed, fall back to reject.
             return ClaimResult.ALREADY_CLAIMED;
         }
-        if (faction.getAvailableBudget() <= 0) {
+
+        // ── unclaimed chunk — original normal-claim path, unchanged ──
+        if (faction.getAvailableBudget() <= 0 && faction.getType() == FactionType.PLAYER) {
             return ClaimResult.NO_BUDGET;
         }
         Claim newClaim = new Claim(chunk, faction.getId());
         claims.put(chunk, newClaim);
         faction.incrementUsedClaims();
         return ClaimResult.SUCCESS;
-
     }
     private final Set<UUID> bypassingPlayers = new HashSet<>();
     public boolean toggleBypass(UUID uuid) {
@@ -161,6 +208,9 @@ public class FactionManager {
     }
     public void removeClaim(ChunkPos chunk) {
         this.claims.remove(chunk);
+    }
+    public void addOverclaim(Claim claim) {
+        this.claims.put(claim.getChunk(), claim);
     }
     public void notifyFaction(Faction faction, Component message, MinecraftServer server) {
         for (UUID memberId : faction.getMembers()) {
