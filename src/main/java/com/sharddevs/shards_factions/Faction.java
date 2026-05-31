@@ -116,7 +116,17 @@ public class Faction {
         this.bonusBudget = 0;
         this.usedClaims = 0;
     }
+    public Faction(UUID id, String name, UUID owner, FactionType type, int power, int bonusBudget, int usedClaims) {
+        this.id = id;
+        this.name = name;
+        this.owner = owner;
+        this.type = type;
+        this.power = power;
+        this.bonusBudget = bonusBudget;
+        this.usedClaims = usedClaims;
 
+        this.members = new HashMap<>();
+    }
     // -----------------------------------------------------------------------
     // GETTERS — [§5] simple identity reads. These hand a private field
     // straight back. Subsystem-specific reads live in their own sections
@@ -161,7 +171,9 @@ public class Faction {
             this.members.put(playerId, FactionRole.MEMBER);
         }
     }
-
+    public void addMemberWithRole(UUID playerId, FactionRole role) {
+        this.members.put(playerId, role);
+    }
     /**
      * Removes a player from this faction.
      *
@@ -181,6 +193,9 @@ public class Faction {
      */
     public int getMemberCount() {
         return this.members.size();
+    }
+    public FactionRole getRole(UUID playerId) {
+        return this.members.get(playerId);
     }
 
     // -----------------------------------------------------------------------

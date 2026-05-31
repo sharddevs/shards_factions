@@ -48,6 +48,14 @@ public class ShardsFactions {
         LOGGER.info("[shards_factions] claim attempt 1: {}", first);
         ClaimResult second = manager.claimChunk(chunk, faction);
         LOGGER.info("[shards_factions] (This one should fail) claim attempt 2: {}", second);
+        // THROWAWAY persistence test — delete when /f new exists.
+        FactionSavedData data = FactionSavedData.get(event.getServer());
+        LOGGER.info("[shards_factions] loaded factions: {}",
+                data.getManager().getAllFactions().size());
+
+        data.getManager().createFaction("PersistTest", UUID.randomUUID(), FactionType.PLAYER);
+        data.setDirty();
+        LOGGER.info("[shards_factions] created PersistTest, marked dirty");
     }
 
     /**

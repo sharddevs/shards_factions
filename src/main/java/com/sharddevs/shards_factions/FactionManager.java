@@ -3,6 +3,7 @@ package com.sharddevs.shards_factions;
 import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.Collection;
 
 import net.minecraft.world.level.ChunkPos;
 
@@ -21,6 +22,9 @@ public class FactionManager {
         this.factions.put(faction.getId(), faction);
         return faction;
     }
+    public void addFaction(Faction faction) {
+        this.factions.put(faction.getId(), faction);
+    }
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
         if (getClaim(chunk) != null) {
             return ClaimResult.ALREADY_CLAIMED;
@@ -33,5 +37,14 @@ public class FactionManager {
             faction.incrementUsedClaims();
             return ClaimResult.SUCCESS;
 
+    }
+    public void addClaim(Claim claim) {
+        this.claims.put(claim.getChunk(), claim);
+    }
+    public Collection<Faction> getAllFactions() {
+        return this.factions.values();
+    }
+    public Collection<Claim> getAllClaims() {
+        return this.claims.values();
     }
 }
