@@ -6,14 +6,13 @@ package com.sharddevs.shards_factions;
 import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
-import java.util.UUID;
 
 import net.neoforged.fml.common.Mod;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.common.NeoForge;
-import net.minecraft.world.level.ChunkPos;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+
 /**
  * Main entry point for the shards_factions mod.
  *
@@ -23,9 +22,7 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
  * metadata but never finds this code.
  *
  * NeoForge discovers this class at startup and instantiates it — the
- * constructor below is what runs. For now the constructor only logs a line,
- * proving the mod loaded. Later, block/item/event registration will be wired
- * up here.
+ * constructor below is what runs.
  */
 @Mod("shards_factions")
 public class ShardsFactions {
@@ -34,25 +31,33 @@ public class ShardsFactions {
     // to MOD_ID instead of re-typing the literal string (and risking typos).
     public static final String MOD_ID = "shards_factions";
 
-    // A logger for this mod. SLF4J is the logging API NeoFor6ge/Minecraft use;
+    // A logger for this mod. SLF4J is the logging API NeoForge/Minecraft use;
     // LogUtils.getLogger() hands back a logger tagged to this class.
     private static final Logger LOGGER = LogUtils.getLogger();
+
+    // The mod's single ChunkBorderTracker. Held here so FactionCommand can
+    // reach it (/f autoclaim). Created and bus-registered in the constructor.
+    public static ChunkBorderTracker chunkBorderTracker;
+
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         LOGGER.info("[Shards Factions] Server is Starting and I'm loaded!");
     }
+
     @SubscribeEvent
     public void onRegisterCommands(RegisterCommandsEvent event) {
         FactionCommand.register(event.getDispatcher());
     }
 
     /**
-     * NeoForge calls this constructor during mod loading. Right now it does
-     * one thing: log that the mod is alive. If you see this line in the
-     * server console, the mod loaded successfully.
+     * NeoForge calls this constructor during mod loading. It logs that the
+     * mod is alive, then creates and bus-registers the event handlers.
      */
     public ShardsFactions() {
         LOGGER.info("shards_factions loaded.");
         NeoForge.EVENT_BUS.register(this);
+
+        chunkBorderTracker = new ChunkBorderTracker();
+        NeoForge.EVENT_BUS.register(chunkBorderTracker);
     }
 }

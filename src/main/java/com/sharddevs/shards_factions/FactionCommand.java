@@ -515,6 +515,45 @@ public class FactionCommand {
                         .then(Commands.argument("role", StringArgumentType.word())
                                 .then(Commands.argument("player", EntityArgument.player())
                                         .executes(ctx -> handleRoleChange(ctx, false)))))
+                // ===========================================================
+                // /f autoclaim  —  toggle autoclaim mode for the player.
+                // While ON, walking into an unclaimed chunk claims it. The
+                // actual claiming happens in ChunkBorderTracker.onChunkCrossed;
+                // this command only flips the per-player flag.
+                // ===========================================================
+                .then(Commands.literal("autoclaim")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            FactionManager manager = FactionSavedData.get(player.server).getManager();
+
+                            // GATE 1: must be in a faction.
+                            Faction playerFaction = manager.getFactionByMember(player.getUUID());
+                            if (playerFaction == null) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You are not in a faction!"));
+                                return 0;
+                            }
+                            // GATE 2: must be OFFICER+ (Addendum 2 §18).
+                            if (!playerFaction.isAtLeastOfficer(player.getUUID())) {
+                                ctx.getSource().sendFailure(
+                                        Component.literal("You must be an Officer or Owner to do this!"));
+                                return 0;
+                            }
+
+                            // ACT: flip the flag. toggleAutoclaim returns the NEW state.
+                            boolean nowOn = ShardsFactions.chunkBorderTracker
+                                    .toggleAutoclaim(player.getUUID());
+
+                            // ephemeral state — no setDirty.
+                            if (nowOn) {
+                                ctx.getSource().sendSuccess(
+                                        () -> Component.literal("Autoclaim ON — walk into chunks to claim them."), false);
+                            } else {
+                                ctx.getSource().sendSuccess(
+                                        () -> Component.literal("Autoclaim OFF."), false);
+                            }
+                            return 1;
+                        }))
                 ;
 
         // Register the tree ONCE and capture the node it returns. The two
@@ -624,15 +663,15 @@ public class FactionCommand {
             return 0;
         }
         // ACT: plain role-set.
+        playerFaction.addMemberWithRole(target.getUUID(), newRole);
+        FactionSavedData.get(player.server).setDirty();
+
         manager.notifyFaction(playerFaction,
                 Component.literal(target.getName().getString() + " is now " + newRole.name() + "."),
                 player.server);
         ctx.getSource().sendSuccess(
                 () -> Component.literal("Set " + target.getName().getString() + " to " + newRole.name() + "."), false);
-
-        playerFaction.addMemberWithRole(target.getUUID(), newRole);
-        FactionSavedData.get(player.server).setDirty();
-        // YOU: notifyFaction + sendSuccess. return 1.
         return 1;
+        // YOU: notifyFaction + sendSuccess. return 1;
     }
 }

@@ -34,7 +34,8 @@ import java.util.UUID;
 // [§10] Map / HashMap — the per-player last-chunk memory.
 import java.util.Map;
 import java.util.HashMap;
-
+import java.util.Set;
+import java.util.HashSet;
 // Minecraft / NeoForge types.
 import net.minecraft.world.level.ChunkPos;          // an (x, z) chunk coordinate
 import net.minecraft.server.level.ServerPlayer;     // a player on the server side
@@ -68,8 +69,36 @@ public class ChunkBorderTracker {
     // entry would make a rejoining player look like they "crossed" from their
     // old chunk to their spawn chunk on their first tick back.
     // -----------------------------------------------------------------------
+    // Players with /f autoclaim enabled. A Set, not a Map — there is no value
+    // to store, only membership: "is this player in autoclaim mode?".
+    // Same lifecycle concern as lastChunk — cleared on logout below.
+    private final Set<UUID> autoclaimEnabled = new HashSet<>();
     private final Map<UUID, ChunkPos> lastChunk = new HashMap<>();
 
+    // -----------------------------------------------------------------------
+    // AUTOCLAIM STATE — controlled access to the autoclaimEnabled set.
+    // The command layer (/f autoclaim) and onChunkCrossed are the only
+    // callers; the set itself stays private.
+    // -----------------------------------------------------------------------
+    public boolean isAutoclaimEnabled(UUID id) {
+        return this.autoclaimEnabled.contains(id);
+    }
+
+    /** Flips autoclaim for a player. Returns the NEW state (true = now on). */
+    public boolean toggleAutoclaim(UUID id) {
+        if (this.autoclaimEnabled.contains(id)) {
+            this.autoclaimEnabled.remove(id);
+            return false;
+        } else {
+            this.autoclaimEnabled.add(id);
+            return true;
+        }
+    }
+
+    /** Force autoclaim off — used by onChunkCrossed's stop cases. */
+    public void disableAutoclaim(UUID id) {
+        this.autoclaimEnabled.remove(id);
+    }
     // -----------------------------------------------------------------------
     // THE TICK HANDLER — runs every tick, for every player.
     //
