@@ -4,6 +4,8 @@ import java.util.UUID;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Collection;
+import java.util.List;
+import java.util.ArrayList;
 
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.network.chat.Component;
@@ -158,5 +160,14 @@ public class FactionManager {
     }
     public Collection<Claim> getAllClaims() {
         return this.claims.values();
+    }
+    public Collection<Claim> getClaimsByFaction(UUID factionId) {
+        List<Claim> result = new ArrayList<>();
+        for (Claim claim : this.claims.values()) {
+            if (claim.getClaimedBy().equals(factionId)) {
+                result.add(claim);
+            }
+        }
+        return result;
     }
 }

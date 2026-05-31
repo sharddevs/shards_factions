@@ -27,6 +27,7 @@ import java.util.List;        // [§9] the List type itself
 import java.util.UUID;        // [§3] a player's permanent unique id
 import java.util.Map;         // [§10] the Map type itself
 import java.util.HashMap;     // a concrete kind of Map we can create with 'new'
+import net.minecraft.core.BlockPos;
 
 // ChatFormatting is a VANILLA Minecraft enum — the 16 colours (RED, AQUA,
 // GOLD, ...) plus style codes (BOLD, ITALIC, ...). It is the faction's
@@ -257,6 +258,19 @@ public class Faction {
      */
     public FactionRole getRole(UUID playerId) {
         return this.members.get(playerId);
+    }
+
+    // 1. The field — nullable. null = faction has no placed obelisk.
+    private BlockPos obeliskPos = null;
+
+    // 2. Getter.
+    public BlockPos getObeliskPos() {
+        return this.obeliskPos;
+    }
+
+    // 3. Setter.
+    public void setObeliskPos(BlockPos obeliskPos) {
+        this.obeliskPos = obeliskPos;
     }
 
     /**

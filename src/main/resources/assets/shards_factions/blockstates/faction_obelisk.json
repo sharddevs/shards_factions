@@ -1,0 +1,7 @@
+{
+  "variants": {
+    "": {
+      "model": "shards_factions:block/faction_obelisk"
+    }
+  }
+}

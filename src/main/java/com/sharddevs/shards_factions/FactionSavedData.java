@@ -12,6 +12,7 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 // ChatFormatting — the faction colour type, persisted by name() / valueOf().
 import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 /**
  * Persistence layer for faction data (design §10).
  *
@@ -50,6 +51,9 @@ public class FactionSavedData extends SavedData {
             // factionTag.putString("name", ??? );
             factionTag.putUUID("owner", faction.getOwner());
             // factionTag.putUUID("owner", ??? );
+            if (faction.getObeliskPos() != null) {
+                factionTag.putLong("obeliskPos", faction.getObeliskPos().asLong());
+            }
             factionTag.putInt("bonusBudget", faction.getBonusBudget());
             // factionTag.putInt("bonusBudget", ??? );
             factionTag.putInt("usedClaims", faction.getUsedClaims());
@@ -118,6 +122,10 @@ public class FactionSavedData extends SavedData {
                     factionTag.getInt("bonusBudget"),
                     factionTag.getInt("usedClaims")
             );
+            if (factionTag.contains("obeliskPos")) {
+                faction.setObeliskPos(
+                        BlockPos.of(factionTag.getLong("obeliskPos")));
+            }
             ListTag memberList = factionTag.getList("members", Tag.TAG_COMPOUND);
             for (int j = 0; j < memberList.size(); j++) {
                 CompoundTag memberTag = memberList.getCompound(j);

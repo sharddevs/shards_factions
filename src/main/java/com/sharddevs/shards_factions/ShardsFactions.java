@@ -12,7 +12,10 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.RegisterCommandsEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.bus.api.IEventBus;
 
+import com.sharddevs.shards_factions.obelisk.ObeliskRegistration;
 /**
  * Main entry point for the shards_factions mod.
  *
@@ -53,11 +56,15 @@ public class ShardsFactions {
      * NeoForge calls this constructor during mod loading. It logs that the
      * mod is alive, then creates and bus-registers the event handlers.
      */
-    public ShardsFactions() {
+    public ShardsFactions(IEventBus modBus) {
         LOGGER.info("shards_factions loaded.");
+        ObeliskRegistration.BLOCKS.register(modBus);
+        ObeliskRegistration.ITEMS.register(modBus);
+        ObeliskRegistration.BLOCK_ENTITIES.register(modBus);
         NeoForge.EVENT_BUS.register(this);
 
         chunkBorderTracker = new ChunkBorderTracker();
         NeoForge.EVENT_BUS.register(chunkBorderTracker);
+
     }
 }
