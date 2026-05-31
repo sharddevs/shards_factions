@@ -29,6 +29,9 @@ public class ProtectionEvents {
         Player player = event.getPlayer();
         Faction breakerFaction = manager.getFactionByMember(player.getUUID());
         if (breakerFaction != null && breakerFaction.getId().equals(claim.getClaimedBy())) return;
+        if (manager.isBypassing(player.getUUID())) {
+            return;
+        }
         event.setCanceled(true);
         player.sendSystemMessage(Component.literal("Cannot break! " + manager.getFaction(claim.getClaimedBy()).getName() + "'s land is protected by their obelisk!"));
 
@@ -46,6 +49,9 @@ public class ProtectionEvents {
         //Player playerManager = player.getPlayer();
         Faction placerFaction = manager.getFactionByMember(player.getUUID());
         if (placerFaction != null && placerFaction.getId().equals(claim.getClaimedBy())) return;
+        if (manager.isBypassing(player.getUUID())) {
+            return;
+        }
         place.setCanceled(true);
         player.sendSystemMessage(Component.literal("Cannot place in " + manager.getFaction(claim.getClaimedBy()).getName() + "'s  land while it is protected by their obelisk!"));
     }
@@ -62,7 +68,6 @@ public class ProtectionEvents {
             Faction owner = manager.getFaction(claim.getClaimedBy());
             if (owner.getType() != FactionType.PLAYER) {
                 toRemove.add(pos);
-
             }
         }
         event.getAffectedBlocks().removeAll(toRemove);

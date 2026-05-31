@@ -6,6 +6,8 @@ import java.util.HashMap;
 import java.util.Collection;
 import java.util.List;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.HashSet;
 
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.network.chat.Component;
@@ -140,6 +142,19 @@ public class FactionManager {
         faction.incrementUsedClaims();
         return ClaimResult.SUCCESS;
 
+    }
+    private final Set<UUID> bypassingPlayers = new HashSet<>();
+    public boolean toggleBypass(UUID uuid) {
+        if (bypassingPlayers.contains(uuid)) {
+            bypassingPlayers.remove(uuid);
+            return false;
+        } else {
+            bypassingPlayers.add(uuid);
+            return true;
+        }
+    }
+    public boolean isBypassing(UUID uuid) {
+        return bypassingPlayers.contains(uuid);
     }
     public void addClaim(Claim claim) {
         this.claims.put(claim.getChunk(), claim);

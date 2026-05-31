@@ -666,6 +666,35 @@ public class FactionCommand {
                             ctx.getSource().sendSuccess(() -> finalMap, false);
                             return 1;
                         }))
+                .then(Commands.literal("bypass")
+                        .executes(ctx -> {
+                            ServerPlayer player = ctx.getSource().getPlayerOrException();
+                            // FactionManager manager = FactionSavedData.get(player.server).getManager();
+                                FactionManager manager = FactionSavedData.get(player.server).getManager();
+                            // GATE: ??? (see "Gate question" below)
+
+                            // ACT: flip the bypass flag for this player.
+                            // boolean nowOn = ???.toggleBypass(player.getUUID());
+                                boolean nowOn = manager.toggleBypass(player.getUUID());
+                            // Ephemeral state — no setDirty
+                            // RESPOND: tell the player the new state.
+                                if (!nowOn) {
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal("Bypass is OFF - You no longer bypass Faction Protections!"), false);
+
+                                } else {
+                                    ctx.getSource().sendSuccess(
+                                            () -> Component.literal("Bypass is ON - You are bypassing Faction Protection!"), false);
+                                }
+                            // if (nowOn) {
+                            //     ctx.getSource().sendSuccess(
+                            //             () -> Component.literal("Bypass ON — protection rules are skipped for you."), false);
+                            // } else {
+                            //     ctx.getSource().sendSuccess(
+                            //             () -> Component.literal("Bypass OFF."), false);
+                            // }
+                            return 1;
+                        }))
                 ;
 
         // Register the tree ONCE and capture the node it returns. The two
