@@ -40,6 +40,15 @@ public class FactionManager {
         }
         return null;  // not in any faction
     }
+    public Faction getFactionByName(String name) {
+        for (Faction faction : this.factions.values()) {
+            if (faction.getName().equalsIgnoreCase(name)) {
+                return faction;
+            }
+        }
+        return null;
+    }
+
     public ClaimResult claimChunk(ChunkPos chunk, Faction faction) {
         if (getClaim(chunk) != null) {
             return ClaimResult.ALREADY_CLAIMED;

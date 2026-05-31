@@ -50,7 +50,7 @@ public class Faction {
 
     // [§3] UUID = the owner's permanent player id. NOT final — ownership can
     // transfer to another member via /f promote owner, which reassigns this.
-    private UUID owner;
+    private final UUID owner;
 
     // [§10] Map<UUID, FactionRole> — each member id mapped to their role.
     // [§11] final fixes the slot; the map's CONTENTS still change as members
@@ -71,7 +71,7 @@ public class Faction {
     // [§3] int — the "bonus" budget term (design §6). A spare capacity source
     // for future features (events, upgrades). 0 for now. NOT final — a future
     // feature could change it at runtime.
-    private int bonusBudget;
+    private final int bonusBudget;
 
     // [§3] int — how many chunks this faction currently owns. Goes UP on
     // claim, DOWN on unclaim or losing a chunk to an enemy overclaim. NOT

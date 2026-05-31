@@ -27,7 +27,7 @@ public class FactionSavedData extends SavedData {
     // Constructor. Runs when a fresh (empty) FactionSavedData is created.
     public FactionSavedData() {
         // LOGIC LINE — give 'manager' a brand-new FactionManager.
-        this.manager = new FactionManager();/* ??? */ ;
+        this.manager = new FactionManager();/* ??? */
     }
 
     // A read method so the rest of the mod can reach the wrapped manager.
@@ -85,7 +85,6 @@ public class FactionSavedData extends SavedData {
     public static FactionSavedData load(CompoundTag tag, HolderLookup.Provider registries) {
         FactionSavedData data = new FactionSavedData();
         ListTag factionList = tag.getList("factions", Tag.TAG_COMPOUND);
-        ListTag memberList = tag.getList("members", Tag.TAG_COMPOUND);
         ListTag claimList = tag.getList("claims", Tag.TAG_COMPOUND);
         for (int i = 0; i < factionList.size(); i++) {
             CompoundTag factionTag = factionList.getCompound(i);
@@ -99,6 +98,7 @@ public class FactionSavedData extends SavedData {
                     factionTag.getInt("bonusBudget"),
                     factionTag.getInt("usedClaims")
             );
+            ListTag memberList = factionTag.getList("members", Tag.TAG_COMPOUND);
             for (int j = 0; j < memberList.size(); j++) {
                CompoundTag memberTag = memberList.getCompound(j);
 
